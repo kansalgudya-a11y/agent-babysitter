@@ -1,0 +1,21 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode_16.2.app || true
+      - name: Core tests
+        run: swift test --package-path AgentBabysitterCore
+      - name: Build app
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project AgentBabysitter.xcodeproj -scheme AgentBabysitter \
+            -configuration Debug CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO build
