@@ -6,6 +6,10 @@ struct AgentBabysitterApp: App {
 
     @StateObject private var model = AppModel()
 
+    init() {
+        UISnapshots.runIfRequested()  // exits after writing PNGs
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)

@@ -111,6 +111,10 @@ final class AppModel: ObservableObject {
     /// True while any agent's window is at/over 90% — tints the menu bar.
     @Published private(set) var limitDanger = false
 
+    /// True when launched by the UI-snapshot harness: no watchers, no
+    /// timers, no notification prompt — views render from injected fixtures.
+    static let isSnapshotMode = CommandLine.arguments.contains("--ui-snapshots")
+
     init() {
         let defaults = UserDefaults.standard
         defaults.register(defaults: ["stallThresholdMinutes": 5.0,
@@ -144,6 +148,7 @@ final class AppModel: ObservableObject {
            let saved = try? JSONDecoder().decode([String: UsageLimitSnapshot].self, from: data) {
             capturedUsage = saved.filter { Date().timeIntervalSince($0.value.capturedAt) < 300 * 60 }
         }
+        guard !Self.isSnapshotMode else { return }
         notificationManager.rowProvider = { [weak self] sessionID in
             self?.rows.first { $0.id == sessionID }
         }
@@ -152,6 +157,30 @@ final class AppModel: ObservableObject {
         if precision { applyPrecisionMode() }
         if claudeUsageMeterEnabled { applyClaudeUsageMeter() }
         if liveUsageEnabled { Task { await refreshLiveUsage(forceFetch: true) } }
+    }
+
+    /// Injects a complete UI state for the snapshot harness.
+    func applyFixture(rows: [SessionRow], summary: MenuBarSummary,
+                      usageLimits: [String: UsageLimitSnapshot],
+                      installedAgents: [(id: String, name: String)],
+                      runningAgentIDs: Set<String>,
+                      todayCost: SessionCost,
+                      costHistory: [(day: Date, dollars: Double)],
+                      limitDanger: Bool = false,
+                      noAgentsDetected: Bool = false,
+                      welcomeDismissed: Bool = true,
+                      processDetectionDegraded: Bool = false) {
+        self.rows = rows
+        self.summary = summary
+        self.usageLimits = usageLimits
+        self.installedAgents = installedAgents
+        self.runningAgentIDs = runningAgentIDs
+        self.todayCost = todayCost
+        self.costHistory = costHistory
+        self.limitDanger = limitDanger
+        self.noAgentsDetected = noAgentsDetected
+        self.welcomeDismissed = welcomeDismissed
+        self.processDetectionDegraded = processDetectionDegraded
     }
 
     /// Poll live usage on a slow cadence while enabled. Each probe costs one

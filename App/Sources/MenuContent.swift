@@ -3,10 +3,13 @@ import AgentBabysitterCore
 
 struct MenuContent: View {
     @ObservedObject var model: AppModel
+    /// Snapshot harness only — forces the expanded limits list.
+    var forceShowAllLimits = false
     @Environment(\.openSettings) private var openSettings
     @State private var showLegend = false
     @State private var showCostInfo = false
-    @AppStorage("showAllLimits") private var showAllLimits = false
+    @AppStorage("showAllLimits") private var storedShowAllLimits = false
+    private var showAllLimits: Bool { storedShowAllLimits || forceShowAllLimits }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -109,8 +112,20 @@ struct MenuContent: View {
     }
 
     private var sessionList: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
+        // Snapshot harness: ScrollView content doesn't reach ImageRenderer,
+        // so QA renders use the plain stack. Behavior in the app is unchanged.
+        Group {
+            if AppModel.isSnapshotMode {
+                sessionListContent
+            } else {
+                ScrollView { sessionListContent }
+                    .frame(maxHeight: 380)
+            }
+        }
+    }
+
+    private var sessionListContent: some View {
+        VStack(alignment: .leading, spacing: 2) {
                 ForEach(groupedRows, id: \.agentID) { group in
                     HStack(spacing: 6) {
                         Text(group.agentName)
@@ -130,9 +145,7 @@ struct MenuContent: View {
                     }
                 }
             }
-            .padding(.vertical, 6)
-        }
-        .frame(maxHeight: 380)
+        .padding(.vertical, 6)
     }
 
     /// Open apps by default; expanding shows every installed agent. An agent
@@ -163,7 +176,7 @@ struct MenuContent: View {
                 Spacer()
                 if hasClosedAgents {
                     Button {
-                        withAnimation(.easeOut(duration: 0.15)) { showAllLimits.toggle() }
+                        withAnimation(.easeOut(duration: 0.15)) { storedShowAllLimits.toggle() }
                     } label: {
                         HStack(spacing: 2) {
                             Text(showAllLimits ? "Open apps only" : "Show all")
@@ -243,25 +256,31 @@ struct MenuContent: View {
             }
             if let limit = entry.limit, limit.usedPercent != nil,
                let caption = limitCaption(limit) {
-                let weekly = limit.weeklyUsedPercent ?? 0
-                Text(caption)
+                caption
                     .font(.caption2)
-                    .foregroundStyle(weekly >= 90 ? AnyShapeStyle(.red)
-                                     : weekly >= 70 ? AnyShapeStyle(.orange)
-                                     : AnyShapeStyle(.tertiary))
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
 
-    /// "resets in 2h 22m · week 23%" — whatever parts are known.
-    private func limitCaption(_ limit: UsageLimitSnapshot) -> String? {
-        var parts: [String] = []
-        if let phrase = resetPhrase(limit.resetsAt) { parts.append(phrase) }
-        if let weekly = limit.weeklyUsedPercent {
-            parts.append("week \(Int(weekly))%")
+    /// "resets in 2h 22m · week 23%" — whatever parts are known. Only the
+    /// weekly part escalates to orange/red, by its own severity (the 5h bar
+    /// already carries the 5h color).
+    private func limitCaption(_ limit: UsageLimitSnapshot) -> Text? {
+        var pieces: [Text] = []
+        if let phrase = resetPhrase(limit.resetsAt) {
+            pieces.append(Text(phrase).foregroundColor(.secondary.opacity(0.7)))
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        if let weekly = limit.weeklyUsedPercent {
+            let color: Color = weekly >= 90 ? .red : weekly >= 70 ? .orange
+                : .secondary.opacity(0.7)
+            pieces.append(Text("week \(Int(weekly))%").foregroundColor(color))
+        }
+        guard var caption = pieces.first else { return nil }
+        for piece in pieces.dropFirst() {
+            caption = caption + Text(" · ").foregroundColor(.secondary.opacity(0.7)) + piece
+        }
+        return caption
     }
 
     /// "resets in 2h 22m" when the reset time is known and ahead of us.
@@ -298,6 +317,8 @@ struct MenuContent: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
+            // A brand-new install has no cost to report; skip the noise.
+            if !model.noAgentsDetected {
             Text("Today: \(model.todayCost.display)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -324,6 +345,7 @@ struct MenuContent: View {
                 }
                 .padding(10)
                 .frame(width: 240)
+            }
             }
             Spacer()
             Button {
@@ -474,7 +496,8 @@ struct SessionRowView: View {
         let seconds = Int(end.timeIntervalSince(start))
         guard seconds > 0 else { return nil }
         if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        if seconds < 600 { return "\(seconds / 60)m \(seconds % 60)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
         return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
     }
 }

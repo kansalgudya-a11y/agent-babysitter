@@ -8,13 +8,44 @@ struct PreferencesView: View {
     @State private var licenseKeyInput = ""
 
     var body: some View {
-        Form {
+        TabView {
+            Form {
+                generalTab
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("General", systemImage: "gearshape") }
+
+            Form {
+                notificationsTab
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("Notifications", systemImage: "bell.badge") }
+
+            Form {
+                advancedTab
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
+
+            Form {
+                licenseTab
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("License & Updates", systemImage: "checkmark.seal") }
+        }
+        .frame(width: 480, height: 420)
+    }
+
+    @ViewBuilder private var generalTab: some View {
             Section("General") {
                 Toggle("Start Agent Babysitter when I log in", isOn: $model.launchAtLogin)
                 Button("Show the welcome tips again") { model.resetWelcome() }
                     .disabled(!model.welcomeDismissed)
             }
 
+    }
+
+    @ViewBuilder private var notificationsTab: some View {
             Section {
                 Toggle(isOn: $model.notifyWaiting) {
                     Text("🟡 An agent needs my input")
@@ -62,6 +93,9 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
             }
 
+    }
+
+    @ViewBuilder private var advancedTab: some View {
             Section {
                 Toggle(isOn: $model.precisionModeEnabled) {
                     Text("Exact status from Claude Code")
@@ -91,6 +125,9 @@ struct PreferencesView: View {
                 Text("Everything runs on your Mac. Agent Babysitter makes no network connections and collects nothing.")
             }
 
+    }
+
+    @ViewBuilder private var licenseTab: some View {
             Section {
                 switch license.state {
                 case .activated(let maskedKey):
@@ -168,9 +205,5 @@ struct PreferencesView: View {
                 }
                 .help("Copies version, current readings, and toggle states — paste into a bug report. Contains no file contents or keys.")
             }
-        }
-        .formStyle(.grouped)
-        .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }

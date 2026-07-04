@@ -61,6 +61,13 @@ public struct SessionCost: Equatable, Sendable {
     public var hasUnknownPricing: Bool { !unknownModels.isEmpty }
 
     public init() {}
+
+    /// For previews/fixtures.
+    public init(dollars: Double, totalTokens: Int = 0, unknownModels: Set<String> = []) {
+        self.dollars = dollars
+        self.totalTokens = totalTokens
+        self.unknownModels = unknownModels
+    }
 }
 
 /// Folds transcript entries into dollars. One API message is written as
