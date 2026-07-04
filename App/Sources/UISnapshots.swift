@@ -184,9 +184,23 @@ enum UISnapshots {
                 statsDays: Array(statsDays))
             results.append((name, AnyView(StatsView(model: model, initialRange: range))))
         }
+        stats("stats-today", .today)
         stats("stats-week", .week)
         stats("stats-3months", .threeMonths)
         stats("stats-alltime", .allTime)
+
+        // The reported bug: one day of history must still draw a graph.
+        let singleDayModel = AppModel()
+        singleDayModel.applyFixture(
+            rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+            usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
+            todayCost: SessionCost(dollars: 22.9), costHistory: [],
+            statsDays: [DayStat(day: Calendar.current.startOfDay(for: now),
+                                dollars: 178.4,
+                                byAgent: ["claude-code": 152.1, "codex": 26.3],
+                                activeMinutes: 214, sessions: 9)])
+        results.append(("stats-single-day",
+                        AnyView(StatsView(model: singleDayModel, initialRange: .week))))
 
         // Settings (Form/TabView) is AppKit-backed and invisible to
         // ImageRenderer — verified by eye in the running app instead.

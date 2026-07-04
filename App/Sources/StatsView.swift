@@ -25,13 +25,15 @@ struct StatsView: View {
     }
 
     enum StatsRange: String, CaseIterable, Identifiable {
-        case week = "This week"
+        case today = "Today"
+        case week = "Week"
         case threeMonths = "3 months"
         case allTime = "All time"
         var id: String { rawValue }
 
         var days: Int? {
             switch self {
+            case .today: 1
             case .week: 7
             case .threeMonths: 91
             case .allTime: nil
@@ -41,7 +43,7 @@ struct StatsView: View {
         /// Chart bucket that keeps the bar count readable.
         var unit: Calendar.Component {
             switch self {
-            case .week: .day
+            case .today, .week: .day
             case .threeMonths: .weekOfYear
             case .allTime: .month
             }
@@ -56,7 +58,7 @@ struct StatsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(range == .allTime ? "All time" : range == .week ? "This week" : "Past 3 months")
+                Text(title)
                     .font(.title2).fontWeight(.semibold)
                 Spacer()
                 Picker("", selection: $range) {
@@ -64,7 +66,7 @@ struct StatsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 250)
+                .frame(width: 300)
             }
 
             HStack(alignment: .top, spacing: 16) {
@@ -74,7 +76,9 @@ struct StatsView: View {
                 stat(value: totalCost, label: "estimated usage\nvalue (API prices)")
             }
 
-            if buckets.count > 1 {
+            // Even one bucket draws (a single bar beats a missing graph);
+            // Today skips the time charts — one day has no time axis.
+            if range != .today, !buckets.isEmpty {
                 Divider()
                 // Dollars and hours live on very different scales — one
                 // shared axis buries the smaller series, so: two charts.
@@ -138,6 +142,15 @@ struct StatsView: View {
         return grouped.values.sorted { $0.start < $1.start }
     }
 
+    private var title: String {
+        switch range {
+        case .today: "Today"
+        case .week: "This week"
+        case .threeMonths: "Past 3 months"
+        case .allTime: "All time"
+        }
+    }
+
     private var unitName: String {
         switch range.unit {
         case .day: "day"
@@ -167,7 +180,7 @@ struct StatsView: View {
             }
             .chartXAxis {
                 switch range {
-                case .week:
+                case .today, .week:
                     AxisMarks(values: .stride(by: .day)) {
                         AxisValueLabel(format: .dateTime.weekday(.narrow), centered: true)
                     }
