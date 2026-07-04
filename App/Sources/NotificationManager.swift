@@ -42,20 +42,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// "Claude Code is at 82% of its 5-hour limit." One identifier per agent
-    /// so re-alerts replace rather than stack.
+    /// per window kind so re-alerts replace rather than stack.
     func deliverLimitAlert(agentName: String, agentID: String,
-                           usedPercent: Double, resetsAt: Date?) {
+                           usedPercent: Double, resetsAt: Date?, isWeekly: Bool = false) {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
-        var body = "\(agentName) is at \(Int(usedPercent))% of its 5-hour limit."
+        let window = isWeekly ? "weekly" : "5-hour"
+        var body = "\(agentName) is at \(Int(usedPercent))% of its \(window) limit."
         if let resetsAt, resetsAt > Date() {
             let minutes = Int(resetsAt.timeIntervalSinceNow / 60)
-            body += minutes >= 60 ? " Resets in \(minutes / 60)h \(minutes % 60)m."
-                                  : " Resets in \(max(minutes, 1))m."
+            if minutes >= 24 * 60 {
+                body += " Resets in \(minutes / (24 * 60))d \((minutes % (24 * 60)) / 60)h."
+            } else if minutes >= 60 {
+                body += " Resets in \(minutes / 60)h \(minutes % 60)m."
+            } else {
+                body += " Resets in \(max(minutes, 1))m."
+            }
         }
         content.body = body
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "limit-\(agentID)",
+        center.add(UNNotificationRequest(identifier: "limit-\(agentID)-\(window)",
                                          content: content, trigger: nil))
     }
 

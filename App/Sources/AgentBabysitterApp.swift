@@ -10,7 +10,7 @@ struct AgentBabysitterApp: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            MenuBarLabel(summary: model.summary)
+            MenuBarLabel(summary: model.summary, limitDanger: model.limitDanger)
         }
         .menuBarExtraStyle(.window)
 
@@ -24,14 +24,21 @@ struct AgentBabysitterApp: App {
 /// monochrome glyph when nothing needs attention.
 struct MenuBarLabel: View {
     let summary: MenuBarSummary
+    var limitDanger = false
 
     var body: some View {
+        // ⚠️ prefixes everything when any usage window is at 90%+ — the
+        // babysitter's job is exactly this warning.
         if summary.activeCount == 0 {
-            Image(systemName: "moon.zzz")
+            if limitDanger {
+                Text("⚠️")
+            } else {
+                Image(systemName: "moon.zzz")
+            }
         } else if let state = summary.worstState {
             // Emoji render in color in the menu bar; SF Symbols would be
             // template-flattened to monochrome.
-            Text("\(state.dotEmoji) \(summary.activeCount)")
+            Text("\(limitDanger ? "⚠️ " : "")\(state.dotEmoji) \(summary.activeCount)")
         } else {
             Image(systemName: "moon.zzz")
         }

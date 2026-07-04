@@ -34,17 +34,33 @@ public enum StatusLineInstaller {
         var root = try parse(data)
 
         let existing = root["statusLine"] as? [String: Any]
-        if let existing, (existing["command"] as? String)?.contains(marker) == true {
-            // Already ours — idempotent.
+        func wrapperCommand(passthrough: Bool) -> String {
+            // Size-guarded like the hook command, so an orphaned install
+            // can't grow the log unbounded; `|| true` keeps the status line
+            // exiting clean when the guard skips the append.
+            var command = "input=$(cat); umask 077; "
+            + "[ \"$(stat -f%z '\(eventLogPath)' 2>/dev/null || echo 0)\" -lt \(HooksInstaller.maxLogBytesShell) ] "
+            + "&& printf '%s\\n' \"$input\" >> '\(eventLogPath)' || true"
+            if passthrough {
+                command += "; printf '%s' \"$input\" | /bin/sh '\(originalCommandPath)'"
+            }
+            return command + " #\(marker)"
+        }
+
+        if let existing, let current = existing["command"] as? String, current.contains(marker) {
+            // Ours already — upgrade the command in place when the template
+            // changed, preserving whether it passes through to an original.
+            let upgraded = wrapperCommand(passthrough: current.contains(originalCommandPath))
+            if upgraded != current {
+                var statusLine = existing
+                statusLine["command"] = upgraded
+                root["statusLine"] = statusLine
+            }
             return (try serialize(root), nil, nil)
         }
 
         let originalCommand = existing?["command"] as? String
-        var command = "input=$(cat); umask 077; printf '%s\\n' \"$input\" >> '\(eventLogPath)'"
-        if originalCommand != nil {
-            command += "; printf '%s' \"$input\" | /bin/sh '\(originalCommandPath)'"
-        }
-        command += " #\(marker)"
+        let command = wrapperCommand(passthrough: originalCommand != nil)
 
         var statusLine = existing ?? [:]
         statusLine["type"] = "command"

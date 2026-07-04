@@ -25,11 +25,19 @@ public enum HooksInstaller {
 
     private static let hookEvents = ["Notification", "Stop"]
 
+    /// 5MB, mirrored by the watcher's cap. The guard lives in the shell so
+    /// an orphaned install (app quit or deleted with the toggle on) can't
+    /// grow the log unbounded — appends just stop until the app truncates.
+    static let maxLogBytesShell = "5242880"
+
     private static func hookCommand(eventLogPath: String) -> String {
         // Hook stdin carries one JSON event; append it as a line to the event
         // log (file-drop transport, no sockets). umask keeps a freshly
-        // created log private. The trailing comment is the removal marker.
-        "umask 077; mkdir -p \"$(dirname '\(eventLogPath)')\" && { cat; echo; } >> '\(eventLogPath)' #\(marker)"
+        // created log private; stdin is always drained so the writer never
+        // sees a broken pipe. The trailing comment is the removal marker.
+        "umask 077; mkdir -p \"$(dirname '\(eventLogPath)')\"; "
+        + "if [ \"$(stat -f%z '\(eventLogPath)' 2>/dev/null || echo 0)\" -lt \(maxLogBytesShell) ]; "
+        + "then { cat; echo; } >> '\(eventLogPath)'; else cat >/dev/null; fi #\(marker)"
     }
 
     // MARK: - Pure transforms (testable without touching the filesystem)

@@ -4,6 +4,7 @@ import AgentBabysitterCore
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
     @StateObject private var license = LicenseManager()
+    @StateObject private var updates = UpdateChecker()
     @State private var licenseKeyInput = ""
 
     var body: some View {
@@ -125,6 +126,47 @@ struct PreferencesView: View {
                 Text("License")
             } footer: {
                 Text("Activation contacts api.lemonsqueezy.com once, only when you press the button. Nothing else about your usage is ever sent.")
+            }
+
+            Section("About") {
+                LabeledContent("Version") {
+                    Text(updates.currentVersion)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Check for updates") {
+                        Task { await updates.check() }
+                    }
+                    .disabled(updates.status == .checking)
+                    switch updates.status {
+                    case .idle: EmptyView()
+                    case .checking:
+                        ProgressView().controlSize(.small)
+                    case .upToDate(let version):
+                        Text("You're on the latest version (\(version)).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .available(let version, let url):
+                        Button("Get \(version)") { updates.openReleasePage(url) }
+                            .buttonStyle(.link)
+                    case .failed(let message):
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Button("Copy diagnostics") {
+                    let defaults = UserDefaults.standard
+                    let report = """
+                    Agent Babysitter \(updates.currentVersion)
+                    limits: \(defaults.string(forKey: "debugUsageLimits") ?? defaults.dictionary(forKey: "debugUsageLimits").map(String.init(describing:)) ?? "-")
+                    agents: \(defaults.string(forKey: "debugAgents") ?? "-")
+                    toggles: precision=\(model.precisionModeEnabled) meter=\(model.claudeUsageMeterEnabled) live=\(model.liveUsageEnabled) alerts=\(model.notifyLimit)@\(Int(model.limitAlertThreshold))%
+                    """
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report, forType: .string)
+                }
+                .help("Copies version, current readings, and toggle states — paste into a bug report. Contains no file contents or keys.")
             }
         }
         .formStyle(.grouped)

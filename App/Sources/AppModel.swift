@@ -100,8 +100,16 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(data, forKey: "capturedUsage")
         }
     }
-    /// Limit alerts fire once per window per agent; keyed by reset time.
-    private var alertedLimitWindows: [String: Date] = [:]
+    /// Limit alerts fire once per window per agent; keyed by reset time and
+    /// persisted so a relaunch doesn't re-alert the same window.
+    private var alertedFiveHour: [String: Date] =
+        (UserDefaults.standard.dictionary(forKey: "alertedFiveHour") as? [String: Double] ?? [:])
+            .mapValues(Date.init(timeIntervalSince1970:))
+    private var alertedWeekly: [String: Date] =
+        (UserDefaults.standard.dictionary(forKey: "alertedWeekly") as? [String: Double] ?? [:])
+            .mapValues(Date.init(timeIntervalSince1970:))
+    /// True while any agent's window is at/over 90% — tints the menu bar.
+    @Published private(set) var limitDanger = false
 
     init() {
         let defaults = UserDefaults.standard
@@ -239,12 +247,29 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // States drift as time passes with no events (working -> stalled),
-        // and elapsed-time labels need re-rendering.
+        scheduleRefreshTimer(interval: 2)
+    }
+
+    /// States drift as time passes with no events (working -> stalled) and
+    /// elapsed-time labels need re-rendering — but an idle Mac shouldn't pay
+    /// a 2s heartbeat all night. Fast while sessions are listed or recently
+    /// were; slow when quiet. File/process events still refresh instantly.
+    private var refreshInterval: TimeInterval = 2
+    private var lastRowsSeenAt = Date()
+
+    private func scheduleRefreshTimer(interval: TimeInterval) {
+        refreshInterval = interval
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
+    }
+
+    private func adaptRefreshCadence() {
+        if !rows.isEmpty { lastRowsSeenAt = Date() }
+        let quiet = rows.isEmpty && Date().timeIntervalSince(lastRowsSeenAt) > 120
+        let desired: TimeInterval = quiet ? 30 : 2
+        if desired != refreshInterval { scheduleRefreshTimer(interval: desired) }
     }
 
     /// Watch an adapter root; used at start and when a root appears later
@@ -303,13 +328,8 @@ final class AppModel: ObservableObject {
         capturedUsage = capturedUsage.filter {
             Date().timeIntervalSince($0.value.capturedAt) < 300 * 60
         }
-        for candidates in [capturedUsage, liveUsage] {
-            for (agentID, snapshot) in candidates {
-                if let current = usageLimits[agentID], current.usedPercent != nil,
-                   current.capturedAt > snapshot.capturedAt { continue }
-                usageLimits[agentID] = snapshot
-            }
-        }
+        usageLimits = UsageLimitLayering.merged(base: usageLimits,
+                                                overlays: [capturedUsage, liveUsage])
         self.rows = rows
         self.usageLimits = usageLimits
         self.runningAgentIDs = await store.runningAgentIDs()
@@ -325,6 +345,7 @@ final class AppModel: ObservableObject {
             forKey: "debugAgents")
         deliverLimitAlerts(usageLimits)
         recordCostHistory(todayCost.dollars)
+        adaptRefreshCadence()
         self.summary = summary
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost
@@ -347,37 +368,37 @@ final class AppModel: ObservableObject {
     /// Fold today's running total into the persisted 7-day history. Max
     /// guards against dips when old sessions prune out mid-day.
     private func recordCostHistory(_ todayDollars: Double) {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate]
-        formatter.timeZone = .current  // bucket by the user's day, not UTC
-        var saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
-        let todayKey = formatter.string(from: Date())
-        saved[todayKey] = max(saved[todayKey] ?? 0, todayDollars)
-        let cutoff = Date().addingTimeInterval(-7 * 86_400)
-        saved = saved.filter { key, _ in
-            formatter.date(from: key).map { $0 > cutoff } ?? false
-        }
-        UserDefaults.standard.set(saved, forKey: "costHistory")
-        costHistory = saved
-            .compactMap { key, dollars in formatter.date(from: key).map { ($0, dollars) } }
-            .sorted { $0.0 < $1.0 }
+        let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars)
+        UserDefaults.standard.set(updated, forKey: "costHistory")
+        costHistory = DailyCostHistory.series(updated)
     }
 
-    /// Alert once per 5-hour window when an agent crosses the threshold.
+    /// Alert once per window (5h and weekly independently) when an agent
+    /// crosses the threshold; the decision logic lives in Core.
     private func deliverLimitAlerts(_ limits: [String: UsageLimitSnapshot]) {
+        limitDanger = limits.values.contains {
+            ($0.usedPercent ?? 0) >= 90 &&
+            ($0.resetsAt.map { $0 > Date() } ?? true)
+        }
         guard notifyLimit, !notificationsMuted else { return }
-        for (agentID, limit) in limits {
-            guard let used = limit.usedPercent, used >= limitAlertThreshold else { continue }
-            // Key the alert to the window so it fires once, and again only
-            // after the window rolls over.
-            let window = limit.resetsAt ?? Date(timeIntervalSince1970:
-                (Date().timeIntervalSince1970 / 18_000).rounded(.down) * 18_000)
-            if let alerted = alertedLimitWindows[agentID], alerted == window { continue }
-            alertedLimitWindows[agentID] = window
-            let name = installedAgents.first { $0.id == agentID }?.name
-                ?? adapters.first { $0.id == agentID }?.displayName ?? agentID
-            notificationManager.deliverLimitAlert(agentName: name, agentID: agentID,
-                                                  usedPercent: used, resetsAt: limit.resetsAt)
+        let outcome = UsageAlertPlanner.plan(limits: limits,
+                                             threshold: limitAlertThreshold,
+                                             alertedFiveHour: alertedFiveHour,
+                                             alertedWeekly: alertedWeekly)
+        alertedFiveHour = outcome.alertedFiveHour
+        alertedWeekly = outcome.alertedWeekly
+        UserDefaults.standard.set(alertedFiveHour.mapValues(\.timeIntervalSince1970),
+                                  forKey: "alertedFiveHour")
+        UserDefaults.standard.set(alertedWeekly.mapValues(\.timeIntervalSince1970),
+                                  forKey: "alertedWeekly")
+        for alert in outcome.alerts {
+            let name = installedAgents.first { $0.id == alert.agentID }?.name
+                ?? adapters.first { $0.id == alert.agentID }?.displayName ?? alert.agentID
+            notificationManager.deliverLimitAlert(agentName: name, agentID: alert.agentID,
+                                                  usedPercent: alert.usedPercent,
+                                                  resetsAt: alert.resetsAt,
+                                                  isWeekly: alert.isWeekly)
         }
     }
 

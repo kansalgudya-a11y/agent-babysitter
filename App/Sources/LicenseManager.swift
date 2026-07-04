@@ -26,14 +26,25 @@ final class LicenseManager: ObservableObject {
     @Published private(set) var busy = false
 
     private let session: URLSession
-    private let defaults = UserDefaults.standard
 
     init() {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
         session = URLSession(configuration: config)
+        migrateFromDefaultsIfNeeded()
+        if let stored = Self.keychainRead(), !stored.key.isEmpty {
+            state = .activated(maskedKey: Self.mask(stored.key))
+        }
+    }
+
+    /// v0.1.x briefly kept the key in UserDefaults; move it to the keychain.
+    private func migrateFromDefaultsIfNeeded() {
+        let defaults = UserDefaults.standard
         if let key = defaults.string(forKey: "licenseKey"), !key.isEmpty {
-            state = .activated(maskedKey: Self.mask(key))
+            Self.keychainWrite(key: key,
+                               instanceID: defaults.string(forKey: "licenseInstanceID") ?? "")
+            defaults.removeObject(forKey: "licenseKey")
+            defaults.removeObject(forKey: "licenseInstanceID")
         }
     }
 
@@ -53,8 +64,7 @@ final class LicenseManager: ObservableObject {
         }
         switch LicenseParsing.activation(from: data, expecting: Self.expectation) {
         case .success(let activation):
-            defaults.set(activation.licenseKey, forKey: "licenseKey")
-            defaults.set(activation.instanceID, forKey: "licenseInstanceID")
+            Self.keychainWrite(key: activation.licenseKey, instanceID: activation.instanceID)
             state = .activated(maskedKey: Self.mask(activation.licenseKey))
         case .failure(.rejected(let message)):
             lastError = message
@@ -66,23 +76,61 @@ final class LicenseManager: ObservableObject {
     }
 
     func deactivate() async {
-        guard let key = defaults.string(forKey: "licenseKey"),
-              let instance = defaults.string(forKey: "licenseInstanceID") else {
+        guard let stored = Self.keychainRead() else {
             clearLocal()
             return
         }
         busy = true
         defer { busy = false }
         // Best effort: free the activation seat; clear locally regardless.
-        _ = await post("deactivate", body: ["license_key": key, "instance_id": instance])
+        _ = await post("deactivate", body: ["license_key": stored.key,
+                                            "instance_id": stored.instanceID])
         clearLocal()
     }
 
     private func clearLocal() {
-        defaults.removeObject(forKey: "licenseKey")
-        defaults.removeObject(forKey: "licenseInstanceID")
+        Self.keychainDelete()
         state = .unlicensed
         lastError = nil
+    }
+
+    // MARK: - Keychain (a purchased credential doesn't belong in defaults)
+
+    private static let keychainService = "app.agentbabysitter.license"
+
+    private static func keychainWrite(key: String, instanceID: String) {
+        keychainDelete()
+        guard let payload = try? JSONSerialization.data(withJSONObject:
+            ["key": key, "instanceID": instanceID]) else { return }
+        let attributes: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecValueData as String: payload,
+        ]
+        SecItemAdd(attributes as CFDictionary, nil)
+    }
+
+    private static func keychainRead() -> (key: String, instanceID: String)? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: String],
+              let key = root["key"] else { return nil }
+        return (key, root["instanceID"] ?? "")
+    }
+
+    private static func keychainDelete() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     private func post(_ endpoint: String, body: [String: String]) async -> Data? {

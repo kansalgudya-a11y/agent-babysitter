@@ -6,7 +6,7 @@ struct MenuContent: View {
     @Environment(\.openSettings) private var openSettings
     @State private var showLegend = false
     @State private var showCostInfo = false
-    @State private var showAllLimits = false
+    @AppStorage("showAllLimits") private var showAllLimits = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -243,9 +243,12 @@ struct MenuContent: View {
             }
             if let limit = entry.limit, limit.usedPercent != nil,
                let caption = limitCaption(limit) {
+                let weekly = limit.weeklyUsedPercent ?? 0
                 Text(caption)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(weekly >= 90 ? AnyShapeStyle(.red)
+                                     : weekly >= 70 ? AnyShapeStyle(.orange)
+                                     : AnyShapeStyle(.tertiary))
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
@@ -298,6 +301,8 @@ struct MenuContent: View {
             Text("Today: \(model.todayCost.display)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .onTapGesture { showCostInfo.toggle() }
+                .help("Click for the 7-day trend")
             Button {
                 showCostInfo.toggle()
             } label: {
