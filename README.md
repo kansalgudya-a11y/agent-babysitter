@@ -41,9 +41,24 @@ Precision mode (Preferences) merges Notification/Stop hooks into
 `~/.claude/settings.json` non-destructively for exact waiting/done signals;
 disabling removes only our entries.
 
+## Known limitations
+
+- **Pid↔session pairing is heuristic** when several sessions share a cwd (or
+  for Antigravity, per surface): states stay correct, but row-click may focus
+  a sibling window of the same app.
+- **Antigravity is activity-based** (no public conversation schema): states
+  are Working/Done/Ended only, cost shows "—", and turn notifications are
+  suppressed (a >60s silent think would otherwise flap).
+- **Costs are estimates at API list prices** — on subscription plans this is
+  API-equivalent value, not spend. Sonnet 5 uses sticker pricing (intro rate
+  runs through 2026-08-31).
+- **No auto-update yet** (Sparkle planned once Developer ID signing lands);
+  no global hotkey (SwiftUI provides no API to open a MenuBarExtra
+  programmatically).
+
 ## Status
 
-Milestones 1–8 complete (parser, state engine, process watcher, menu bar UI,
+Milestones 1–8 complete + Codex/Antigravity adapters, review hardening (session pruning, dismissal, day-accurate costs, hook buffering, event-log rotation, CI) (parser, state engine, process watcher, menu bar UI,
 notifications + terminal focusing, cost, Precision mode, Preferences +
 launch-at-login). Remaining for 1.0: app icon, Developer ID
 signing + notarization of the DMG.

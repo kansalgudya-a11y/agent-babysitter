@@ -13,7 +13,8 @@ final class CodexAdapterTests: XCTestCase {
         let url = dir.appendingPathComponent(
             "rollout-2026-06-28T20-07-23-019f0ea9-e616-7680-a356-6ea85016501e.jsonl")
         try (try fixtureData(name)).write(to: url)
-        return TranscriptFileTailer(url: url, adapter: adapter)
+        // Use the adapter's reader factory so the stateful usage parser runs
+        return adapter.makeReader(url: url) as! TranscriptFileTailer
     }
 
     // MARK: - Layout
@@ -67,7 +68,7 @@ final class CodexAdapterTests: XCTestCase {
             .split(separator: "\n")
         var reducer = TranscriptReducer()
         for line in lines.prefix(6) {  // through function_call, before output
-            if case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8)) {
+            if case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8), usageState: nil) {
                 reducer.consume(entry)
             }
         }
@@ -90,7 +91,7 @@ final class CodexAdapterTests: XCTestCase {
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"exec_command\"}}",
             "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}",
         ] {
-            if case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8)) {
+            if case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8), usageState: nil) {
                 reducer.consume(entry)
             }
         }
@@ -104,8 +105,24 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertTrue(tailer.isSidechain)
     }
 
+    func testCumulativeUsageCountsDeltasAndHandlesResets() {
+        // total_token_usage is cumulative: 100 -> 150 means 150 total, not 250.
+        // A drop (150 -> 40) means the counter reset; the new value is fresh.
+        let state = CodexRolloutParser.UsageState()
+        func tokens(_ total: Int) -> Int {
+            let line = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":\(total),\"cached_input_tokens\":0,\"output_tokens\":0,\"total_tokens\":\(total)}}}}"
+            guard case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8), usageState: state),
+                  case .assistant(let payload) = entry.kind else { return -1 }
+            return payload.usage?.inputTokens ?? -1
+        }
+        XCTAssertEqual(tokens(100), 100)
+        XCTAssertEqual(tokens(150), 50, "cumulative counter -> delta")
+        XCTAssertEqual(tokens(150), 0, "no growth -> nothing new (usage.totalTokens 0 is skipped by cost)")
+        XCTAssertEqual(tokens(40), 40, "counter reset -> fresh count")
+    }
+
     func testGarbageLineIsMalformed() {
-        guard case .malformed = CodexRolloutParser.parse(Data("not json".utf8)) else {
+        guard case .malformed = CodexRolloutParser.parse(Data("not json".utf8), usageState: nil) else {
             return XCTFail("expected malformed")
         }
     }

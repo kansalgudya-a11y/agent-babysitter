@@ -39,12 +39,18 @@ public final class TranscriptFileTailer {
         self.init(url: url, adapter: ClaudeCodeAdapter())
     }
 
-    public init(url: URL, adapter: any AgentAdapter) {
+    public convenience init(url: URL, adapter: any AgentAdapter) {
+        self.init(url: url,
+                  sessionID: adapter.sessionID(forTranscript: url),
+                  makeParser: { TranscriptTailParser(parseLine: { adapter.parseLine($0) }) })
+    }
+
+    /// Designated: a fresh parser per (re)build so adapters can hand out
+    /// stateful line parsers (e.g. Codex's cumulative usage counter).
+    public init(url: URL, sessionID: String,
+                makeParser: @escaping @Sendable () -> TranscriptTailParser) {
         self.url = url
-        self.sessionID = adapter.sessionID(forTranscript: url)
-        let makeParser: @Sendable () -> TranscriptTailParser = {
-            TranscriptTailParser(parseLine: { adapter.parseLine($0) })
-        }
+        self.sessionID = sessionID
         self.makeParser = makeParser
         self.parser = makeParser()
     }

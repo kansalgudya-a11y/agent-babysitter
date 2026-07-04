@@ -69,12 +69,19 @@ public struct SessionCost: Equatable, Sendable {
 public struct CostAccumulator: Sendable {
 
     public private(set) var cost = SessionCost()
+    /// Cost bucketed by local day of the entry's own timestamp — "today"
+    /// totals count what actually happened today, not whole files whose
+    /// mtime is today (a session spanning midnight would otherwise
+    /// double-attribute).
+    public private(set) var dailyCosts: [Date: SessionCost] = [:]
 
     private let table: PriceTable
+    private let calendar: Calendar
     private var seenMessageIDs: Set<String> = []
 
-    public init(table: PriceTable = .bundled) {
+    public init(table: PriceTable = .bundled, calendar: Calendar = .current) {
         self.table = table
+        self.calendar = calendar
     }
 
     public mutating func consume(_ entry: TranscriptEntry) {
@@ -84,15 +91,27 @@ public struct CostAccumulator: Sendable {
             guard seenMessageIDs.insert(id).inserted else { return }
         }
 
-        cost.totalTokens += usage.totalTokens
-        guard let model = payload.model, let pricing = table.pricing(forModel: model) else {
-            cost.unknownModels.insert(payload.model ?? "unknown")
-            return
+        var dollars = 0.0
+        var unknownModel: String?
+        if let model = payload.model, let pricing = table.pricing(forModel: model) {
+            dollars = (Double(usage.inputTokens) * pricing.inputPerMTok
+                + Double(usage.outputTokens) * pricing.outputPerMTok
+                + Double(usage.cacheReadInputTokens) * pricing.cacheReadPerMTok
+                + Double(usage.cacheCreation5mTokens) * pricing.cacheWrite5mPerMTok
+                + Double(usage.cacheCreation1hTokens) * pricing.cacheWrite1hPerMTok) / 1_000_000
+        } else {
+            unknownModel = payload.model ?? "unknown"
         }
-        cost.dollars += (Double(usage.inputTokens) * pricing.inputPerMTok
-            + Double(usage.outputTokens) * pricing.outputPerMTok
-            + Double(usage.cacheReadInputTokens) * pricing.cacheReadPerMTok
-            + Double(usage.cacheCreation5mTokens) * pricing.cacheWrite5mPerMTok
-            + Double(usage.cacheCreation1hTokens) * pricing.cacheWrite1hPerMTok) / 1_000_000
+
+        cost.totalTokens += usage.totalTokens
+        cost.dollars += dollars
+        if let unknownModel { cost.unknownModels.insert(unknownModel) }
+
+        let day = calendar.startOfDay(for: entry.timestamp ?? Date())
+        var daily = dailyCosts[day] ?? SessionCost()
+        daily.totalTokens += usage.totalTokens
+        daily.dollars += dollars
+        if let unknownModel { daily.unknownModels.insert(unknownModel) }
+        dailyCosts[day] = daily
     }
 }

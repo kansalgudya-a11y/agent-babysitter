@@ -16,6 +16,9 @@ public protocol SessionReading: AnyObject {
     var isSidechain: Bool { get }
     var isUnreadable: Bool { get }
     var cost: SessionCost { get }
+    /// Cost bucketed by local day of entry timestamps (empty when the
+    /// reader can't attribute usage).
+    var dailyCosts: [Date: SessionCost] { get }
     /// Pick up whatever changed on disk since the last call.
     func refresh() throws
 }
@@ -25,6 +28,7 @@ extension TranscriptFileTailer: SessionReading {
     public var hasPendingToolUses: Bool { !reducer.pendingToolUseIDs.isEmpty }
     public var currentTurnStartedAt: Date? { reducer.currentTurnStartedAt }
     public var cost: SessionCost { costAccumulator.cost }
+    public var dailyCosts: [Date: SessionCost] { costAccumulator.dailyCosts }
 
     public func refresh() throws {
         _ = try catchUp()
@@ -46,6 +50,7 @@ public final class FileActivityReader: SessionReading {
     public let isUnreadable = false
     public let hasPendingToolUses = false
     public let cost = SessionCost()
+    public let dailyCosts: [Date: SessionCost] = [:]
 
     public private(set) var lastGrowthAt: Date?
     public private(set) var currentTurnStartedAt: Date?

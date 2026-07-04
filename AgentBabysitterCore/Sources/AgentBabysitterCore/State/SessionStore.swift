@@ -16,6 +16,10 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     /// Which agent owns this session ("claude-code", "codex") + display name.
     public var agentID: String
     public var agentName: String
+    /// The transcript/conversation file backing this row.
+    public var transcriptURL: URL?
+    /// State derives from file activity (no parsed turns) — see AgentAdapter.
+    public var isActivityBased: Bool
 
     /// Session hosted by a desktop app rather than a terminal.
     public var isDesktopApp: Bool {
@@ -29,7 +33,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
                 turnStartedAt: Date?, lastGrowthAt: Date?, isUnreadable: Bool,
                 pid: Int32?, cwd: String?, cost: SessionCost = SessionCost(),
                 entrypoint: String? = nil,
-                agentID: String = "claude-code", agentName: String = "Claude Code") {
+                agentID: String = "claude-code", agentName: String = "Claude Code",
+                transcriptURL: URL? = nil, isActivityBased: Bool = false) {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -42,6 +47,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.entrypoint = entrypoint
         self.agentID = agentID
         self.agentName = agentName
+        self.transcriptURL = transcriptURL
+        self.isActivityBased = isActivityBased
     }
 }
 
@@ -96,12 +103,19 @@ public actor SessionStore {
         /// a day's worth of dead transcripts).
         var everHadProcess = false
         var latestHookSignal: HookSignal?
+        /// User dismissed the row; cleared automatically on new activity.
+        var dismissedAfter: Date?
     }
 
     public private(set) var configuration: Configuration
     public private(set) var isProcessDetectionDegraded = false
 
+    /// Keyed by "<adapterID>/<sessionID>" — session ids are only unique per
+    /// agent.
     private var sessions: [String: TrackedSession] = [:]
+    /// Hook signals that arrived before their session was tracked (hooks can
+    /// beat FSEvents latency for brand-new sessions).
+    private var pendingHookSignals: [String: HookSignal] = [:]
 
     public init(configuration: Configuration) {
         self.configuration = configuration
@@ -144,14 +158,34 @@ public actor SessionStore {
     }
 
     public func hookSignalReceived(sessionID: String, _ signal: HookSignal) {
-        sessions[sessionID]?.latestHookSignal = signal
+        // Hooks are a Claude Code feature; route within that namespace.
+        let key = "claude-code/\(sessionID)"
+        if sessions[key] != nil {
+            sessions[key]?.latestHookSignal = signal
+        } else {
+            pendingHookSignals[key] = signal
+        }
+    }
+
+    /// Hide a session row until it shows new activity.
+    public func dismissSession(id: String, agentID: String) {
+        let key = "\(agentID)/\(id)"
+        // Two-step to avoid overlapping dictionary access (exclusivity).
+        guard var tracked = sessions[key] else { return }
+        tracked.dismissedAfter = tracked.reader.lastGrowthAt ?? Date()
+        sessions[key] = tracked
     }
 
     // MARK: - Output
 
     public func rows(at now: Date = Date()) -> [SessionRow] {
+        prune(at: now)
         var rows: [SessionRow] = []
-        for (id, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
+        for (_, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
+            if let dismissedAfter = tracked.dismissedAfter,
+               (tracked.reader.lastGrowthAt ?? .distantPast) <= dismissedAfter {
+                continue
+            }
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,
                 lastGrowthAt: tracked.reader.lastGrowthAt,
@@ -164,7 +198,7 @@ public actor SessionStore {
                                                     workingWindow: configuration.workingWindow)
             let cwd = tracked.reader.lastKnownCWD
             rows.append(SessionRow(
-                id: id,
+                id: tracked.reader.sessionID,
                 projectName: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
                     ?? tracked.projectDirName,
                 state: state,
@@ -176,7 +210,9 @@ public actor SessionStore {
                 cost: tracked.reader.cost,
                 entrypoint: tracked.reader.lastKnownEntrypoint,
                 agentID: tracked.adapter.id,
-                agentName: tracked.adapter.displayName))
+                agentName: tracked.adapter.displayName,
+                transcriptURL: tracked.reader.url,
+                isActivityBased: tracked.adapter.isActivityBased))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]
@@ -192,19 +228,19 @@ public actor SessionStore {
                               activeCount: states.filter { $0 != .ended }.count)
     }
 
-    /// Dollars across every transcript modified since local midnight —
-    /// including sessions hidden from the row list (no live process).
-    /// Recomputed from transcripts; there is no cost database.
+    /// Dollars attributed to entries whose own timestamps fall today —
+    /// sessions spanning midnight contribute only today's portion. Includes
+    /// sessions hidden from the row list; recomputed from transcripts, no
+    /// cost database.
     public func todayCost(at now: Date = Date(),
                           calendar: Calendar = .current) -> SessionCost {
         let midnight = calendar.startOfDay(for: now)
         var total = SessionCost()
         for (_, tracked) in sessions {
-            guard let growth = tracked.reader.lastGrowthAt, growth >= midnight else { continue }
-            let cost = tracked.reader.cost
-            total.dollars += cost.dollars
-            total.totalTokens += cost.totalTokens
-            total.unknownModels.formUnion(cost.unknownModels)
+            guard let daily = tracked.reader.dailyCosts[midnight] else { continue }
+            total.dollars += daily.dollars
+            total.totalTokens += daily.totalTokens
+            total.unknownModels.formUnion(daily.unknownModels)
         }
         return total
     }
@@ -214,21 +250,43 @@ public actor SessionStore {
     private var latestProcessesByAdapter: [String: [RunningProcess]] = [:]
 
     private func track(url: URL, adapter: any AgentAdapter, projectDirName: String) {
-        let id = adapter.sessionID(forTranscript: url)
-        if sessions[id] == nil {
-            sessions[id] = TrackedSession(reader: adapter.makeReader(url: url),
-                                          adapter: adapter,
-                                          projectDirName: projectDirName)
+        let key = "\(adapter.id)/\(adapter.sessionID(forTranscript: url))"
+        if sessions[key] == nil {
+            BabysitterLog.store.info("tracking session \(key, privacy: .public)")
+            sessions[key] = TrackedSession(reader: adapter.makeReader(url: url),
+                                           adapter: adapter,
+                                           projectDirName: projectDirName)
+            if let buffered = pendingHookSignals.removeValue(forKey: key) {
+                sessions[key]?.latestHookSignal = buffered
+            }
         }
-        try? sessions[id]?.reader.refresh()
+        try? sessions[key]?.reader.refresh()
+    }
+
+    /// Drop sessions with no live process and no activity inside the active
+    /// window — a long-running app would otherwise accumulate every session
+    /// it ever saw.
+    private func prune(at now: Date) {
+        let cutoff = now.addingTimeInterval(-configuration.activeWindow)
+        let stale = sessions.filter { _, tracked in
+            tracked.pid == nil
+                && (tracked.reader.lastGrowthAt ?? .distantPast) < cutoff
+        }.keys
+        for key in stale {
+            BabysitterLog.store.info("pruning idle session \(key, privacy: .public)")
+            sessions.removeValue(forKey: key)
+        }
+        pendingHookSignals = pendingHookSignals.filter { _, signal in
+            signal.timestamp >= cutoff
+        }
     }
 
     private func rematch() {
         for adapter in configuration.adapters {
-            let candidates = sessions.compactMap { id, tracked -> SessionMatchCandidate? in
+            let candidates = sessions.compactMap { key, tracked -> SessionMatchCandidate? in
                 guard tracked.adapter.id == adapter.id else { return nil }
                 return SessionMatchCandidate(
-                    sessionID: id,
+                    sessionID: key,
                     projectDirName: tracked.projectDirName,
                     lastKnownCWD: tracked.reader.lastKnownCWD,
                     lastModified: tracked.reader.lastGrowthAt ?? .distantPast)

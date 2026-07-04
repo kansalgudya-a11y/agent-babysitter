@@ -13,6 +13,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private var authorizationRequested = false
 
+    /// Ask once at launch so the app appears in Notification settings before
+    /// the first alert would fire.
+    func primeAuthorization() {
+        requestAuthorizationIfNeeded()
+    }
+
     func deliver(_ events: [NotificationEvent], rows: [SessionRow],
                  muted: Bool, enabledKinds: Set<NotificationEvent.Kind>,
                  stallThresholdMinutes: Int) {

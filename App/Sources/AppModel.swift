@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
     private var watchedRoots: Set<URL> = []
     private var hookWatcher: HookEventWatcher?
     private var refreshTimer: Timer?
+    private var onboardingPollTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
     private let notificationManager = NotificationManager()
 
@@ -84,8 +85,17 @@ final class AppModel: ObservableObject {
         notificationManager.rowProvider = { [weak self] sessionID in
             self?.rows.first { $0.id == sessionID }
         }
+        notificationManager.primeAuthorization()
         start()
         if precision { applyPrecisionMode() }
+    }
+
+    func dismiss(_ row: SessionRow) {
+        let store = store
+        Task {
+            await store.dismissSession(id: row.id, agentID: row.agentID)
+            await self.refresh()
+        }
     }
 
     func retryDetection() {
@@ -99,10 +109,18 @@ final class AppModel: ObservableObject {
             .filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !availableRoots.isEmpty else {
             noAgentsDetected = true
-            return  // idle cheaply; Retry re-checks, and the refresh timer
-                    // isn't running so nothing polls
+            // Slow poll so an agent installed later is picked up without a
+            // manual Retry (the copy promises this).
+            onboardingPollTimer?.invalidate()
+            onboardingPollTimer = Timer.scheduledTimer(withTimeInterval: 15,
+                                                       repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.start() }
+            }
+            return
         }
         noAgentsDetected = false
+        onboardingPollTimer?.invalidate()
+        onboardingPollTimer = nil
 
         let store = store
         Task {
@@ -185,7 +203,11 @@ final class AppModel: ObservableObject {
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost
 
+        // Activity-based agents (Antigravity) infer turn ends from write
+        // gaps; a long think would flap Done/Working and spam notifications.
+        let notifiableRows = rows.filter { !$0.isActivityBased }
         let events = notificationPlanner.events(for: rows)
+            .filter { event in notifiableRows.contains { $0.id == event.sessionID } }
         var enabledKinds: Set<NotificationEvent.Kind> = []
         if notifyWaiting { enabledKinds.insert(.waitingForInput) }
         if notifyDone { enabledKinds.insert(.turnCompleted) }

@@ -22,6 +22,12 @@ public final class HookEventWatcher: @unchecked Sendable {
         let directory = eventLogURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // Events written while the app wasn't running are stale by design —
+        // truncate so the log can't grow without bound across sessions.
+        if FileManager.default.fileExists(atPath: eventLogURL.path) {
+            try? FileHandle(forWritingTo: eventLogURL).truncate(atOffset: 0)
+            BabysitterLog.hooks.info("truncated stale event log")
+        }
         offset = (try? FileManager.default.attributesOfItem(atPath: eventLogURL.path))
             .flatMap { $0[.size] as? UInt64 } ?? 0
 

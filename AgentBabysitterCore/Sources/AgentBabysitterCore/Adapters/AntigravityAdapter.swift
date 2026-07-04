@@ -83,7 +83,7 @@ public struct AntigravityAdapter: AgentAdapter {
                 .contentModificationDate,
                   now.timeIntervalSince(modified) <= maxAge else { continue }
             found.append(SessionFileInfo(sessionID: sessionID(forTranscript: file),
-                                         projectDirName: displayName,
+                                         projectDirName: projectDirName(forTranscript: file),
                                          lastModified: modified,
                                          url: file))
         }
@@ -120,8 +120,12 @@ public struct AntigravityAdapter: AgentAdapter {
     }
 
     public func projectDirName(forTranscript url: URL) -> String {
-        displayName
+        // No readable cwd — a short conversation id keeps multiple rows
+        // distinguishable (the agent badge already names the surface).
+        "#\(sessionID(forTranscript: url).prefix(8))"
     }
+
+    public var isActivityBased: Bool { true }
 
     public func agentPIDs(psComm: String, psArgs: String) -> [Int32] {
         var pids: [Int32] = []

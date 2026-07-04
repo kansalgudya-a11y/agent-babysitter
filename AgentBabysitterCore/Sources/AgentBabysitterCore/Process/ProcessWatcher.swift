@@ -118,6 +118,7 @@ public actor ProcessWatcher {
             let processes = try await scanner.scanProcesses(for: adapters)
             latest = Update(processesByAdapter: processes, degraded: false)
         } catch {
+            BabysitterLog.process.error("process scan failed: \(error.localizedDescription, privacy: .public)")
             latest = Update(processesByAdapter: latest.processesByAdapter, degraded: true)
         }
         handler?(latest)

@@ -51,8 +51,26 @@ public struct CodexAdapter: AgentAdapter {
         return stem
     }
 
+    /// Stateless variant — usage events are treated in isolation. The
+    /// reader path below uses the stateful parser, which tracks the
+    /// cumulative usage counter correctly.
     public func parseLine(_ line: Data) -> LineParseResult {
-        CodexRolloutParser.parse(line)
+        CodexRolloutParser.parse(line, usageState: nil)
+    }
+
+    public func makeReader(url: URL) -> any SessionReading {
+        TranscriptFileTailer(
+            url: url,
+            sessionID: sessionID(forTranscript: url),
+            makeParser: {
+                // token_count carries a CUMULATIVE total_token_usage; per-file
+                // state turns it into deltas (real rollouts show overlapping
+                // last_token_usage values that would over-count if summed).
+                let state = CodexRolloutParser.UsageState()
+                return TranscriptTailParser(parseLine: {
+                    CodexRolloutParser.parse($0, usageState: state)
+                })
+            })
     }
 
     public func agentPIDs(psComm: String, psArgs: String) -> [Int32] {
@@ -96,7 +114,27 @@ public struct CodexAdapter: AgentAdapter {
 /// Maps one Codex rollout line into the normalized entry model.
 enum CodexRolloutParser {
 
-    static func parse(_ line: Data) -> LineParseResult {
+    /// Cumulative usage counter for one rollout file. `total_token_usage`
+    /// is authoritative and monotonic within a counter epoch; a drop means
+    /// the counter reset, so the new value counts fresh.
+    final class UsageState: @unchecked Sendable {
+        var input = 0
+        var cachedInput = 0
+        var output = 0
+
+        func delta(input newInput: Int, cachedInput newCached: Int,
+                   output newOutput: Int) -> (input: Int, cachedInput: Int, output: Int) {
+            func step(_ new: Int, _ old: inout Int) -> Int {
+                let d = new >= old ? new - old : new  // reset → count fresh
+                old = new
+                return d
+            }
+            return (step(newInput, &input), step(newCached, &cachedInput),
+                    step(newOutput, &output))
+        }
+    }
+
+    static func parse(_ line: Data, usageState: UsageState?) -> LineParseResult {
         guard !line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D || $0 == 0x0A })
         else { return .empty }
         guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
@@ -187,12 +225,19 @@ enum CodexRolloutParser {
                                                toolResults: [])))
             case "token_count":
                 let info = payload["info"] as? [String: Any]
-                let last = info?["last_token_usage"] as? [String: Any]
-                let usage = TokenUsage(
-                    inputTokens: last?["input_tokens"] as? Int ?? 0,
-                    outputTokens: last?["output_tokens"] as? Int ?? 0,
-                    cacheCreationInputTokens: 0,
-                    cacheReadInputTokens: last?["cached_input_tokens"] as? Int ?? 0)
+                let totals = info?["total_token_usage"] as? [String: Any]
+                    ?? info?["last_token_usage"] as? [String: Any]
+                let input = totals?["input_tokens"] as? Int ?? 0
+                let cached = totals?["cached_input_tokens"] as? Int ?? 0
+                let output = totals?["output_tokens"] as? Int ?? 0
+                let (dIn, dCached, dOut) = usageState?.delta(input: input,
+                                                             cachedInput: cached,
+                                                             output: output)
+                    ?? (input, cached, output)
+                let usage = TokenUsage(inputTokens: dIn,
+                                       outputTokens: dOut,
+                                       cacheCreationInputTokens: 0,
+                                       cacheReadInputTokens: dCached)
                 // Usage-only: phase-neutral in the reducer (arrives after
                 // task_complete). Model pricing is unknown by design — token
                 // counts are shown, dollars are never guessed.

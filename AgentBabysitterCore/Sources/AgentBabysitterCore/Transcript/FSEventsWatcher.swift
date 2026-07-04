@@ -48,7 +48,10 @@ public final class FSEventsWatcher: @unchecked Sendable {
                 }
             }
             if !changed.isEmpty { watcher.onChange(changed) }
-            if needsRescan { watcher.onNeedsRescan() }
+            if needsRescan {
+                BabysitterLog.watcher.warning("FSEvents dropped events; rescanning")
+                watcher.onNeedsRescan()
+            }
         }
 
         guard let stream = FSEventStreamCreate(

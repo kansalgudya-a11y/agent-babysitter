@@ -17,7 +17,7 @@ struct MenuContent: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(model.rows) { row in
-                            SessionRowView(row: row)
+                            SessionRowView(row: row, onDismiss: { model.dismiss($0) })
                                 .onTapGesture { TerminalFocuser.focusSession(row) }
                         }
                     }
@@ -37,9 +37,10 @@ struct MenuContent: View {
 
             Divider()
             HStack {
-                Text("Today: \(model.todayCost.display)")
+                Text("Today: \(model.todayCost.display) est.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .help("Estimated at API list prices from token usage. On a subscription plan (Pro/Max) this is not what you pay — it's the API-equivalent value.")
                 Spacer()
                 Button {
                     model.notificationsMuted.toggle()
@@ -69,6 +70,8 @@ struct MenuContent: View {
 
 struct SessionRowView: View {
     let row: SessionRow
+    var onDismiss: (SessionRow) -> Void = { _ in }
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -104,12 +107,35 @@ struct SessionRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .contentShape(Rectangle())
+        .background(hovering ? Color.primary.opacity(0.07) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+        .onHover { hovering = $0 }
+        .contextMenu {
+            if let url = row.transcriptURL {
+                Button("Reveal Transcript in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+            Button("Copy Session ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(row.id, forType: .string)
+            }
+            Divider()
+            Button("Dismiss") { onDismiss(row) }
+        }
     }
 
     private var elapsedText: String? {
-        guard row.state != .ended, let start = row.turnStartedAt else { return nil }
-        let seconds = Int(Date().timeIntervalSince(start))
-        guard seconds >= 0 else { return nil }
+        guard let start = row.turnStartedAt else { return nil }
+        // Finished turns show their frozen duration; anything else counts up.
+        let end: Date
+        switch row.state {
+        case .working, .waitingForInput, .stalled: end = Date()
+        case .done: end = row.lastGrowthAt ?? Date()
+        case .ended: return nil
+        }
+        let seconds = Int(end.timeIntervalSince(start))
+        guard seconds > 0 else { return nil }
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
         return "\(seconds / 3600)h \((seconds % 3600) / 60)m"

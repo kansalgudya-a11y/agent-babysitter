@@ -50,6 +50,10 @@ public protocol AgentAdapter: Sendable {
     func makeReader(url: URL) -> any SessionReading
     /// Label used when a session has no known cwd to display.
     func projectDirName(forTranscript url: URL) -> String
+    /// True when state comes from file activity rather than parsed turns —
+    /// turn-completion notifications are unreliable for these and are
+    /// suppressed.
+    var isActivityBased: Bool { get }
 }
 
 public extension AgentAdapter {
@@ -64,6 +68,8 @@ public extension AgentAdapter {
     func projectDirName(forTranscript url: URL) -> String {
         url.deletingLastPathComponent().lastPathComponent
     }
+
+    var isActivityBased: Bool { false }
 }
 
 /// Claude Code: `~/.claude/projects/<munged-cwd>/<session-uuid>.jsonl`.

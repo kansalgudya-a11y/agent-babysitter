@@ -141,7 +141,7 @@ final class AntigravityAdapterTests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].id, "463fa2d4-6415-4945-bbd9-767695929f24")
         XCTAssertEqual(rows[0].agentName, "Antigravity CLI")
-        XCTAssertEqual(rows[0].projectName, "Antigravity CLI", "no cwd is readable — surface label instead")
+        XCTAssertEqual(rows[0].projectName, "#463fa2d4", "short conversation id keeps rows distinguishable")
         XCTAssertEqual(rows[0].state, .working, "db written moments ago")
         XCTAssertEqual(rows[0].cost, SessionCost(), "usage is unreadable — never invented")
     }
