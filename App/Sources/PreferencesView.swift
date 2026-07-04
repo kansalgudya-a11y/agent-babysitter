@@ -52,11 +52,11 @@ struct PreferencesView: View {
                 }
                 Toggle(isOn: $model.claudeUsageMeterEnabled) {
                     Text("Claude usage meter (works offline)")
-                    Text("Shows your real 5-hour usage % by recording the numbers Claude Code already computes on your Mac — no internet needed. Adds a tiny status-line helper and the same settings entry as exact status; if you have your own status line it keeps working, and turning this off restores everything. Terminal sessions update it continuously; desktop app sessions update when a turn finishes.")
+                    Text("Shows your real 5-hour usage % with no internet, by recording the numbers Claude Code computes for its terminal status line. It updates whenever a Claude session runs in a terminal — the % covers your whole account, so it reflects desktop app usage too. If you only ever use the desktop app, turn on Live usage below instead. Your own status line keeps working, and turning this off restores it exactly.")
                 }
                 Toggle(isOn: $model.liveUsageEnabled) {
                     Text("Live usage % (connects to the internet)")
-                    Text("Off by default, everything else stays fully offline. When on, the app uses your existing Claude login to fetch your real 5-hour usage from Anthropic, even before any session runs. It only ever contacts api.anthropic.com and never sends your data anywhere else. Codex already shows real usage with no network.")
+                    Text("Off by default, everything else stays fully offline. When on, the app uses your existing Claude login (terminal or desktop app) to fetch your real 5-hour usage from Anthropic, even when no session is running. It only ever contacts api.anthropic.com and never sends your data anywhere else. Codex already shows real usage with no network.")
                 }
                 if let error = model.hooksError {
                     Text(error)

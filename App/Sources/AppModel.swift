@@ -270,6 +270,10 @@ final class AppModel: ObservableObject {
         }
         self.rows = rows
         self.usageLimits = usageLimits
+        // Mirror for support/debugging: `defaults read app.agentbabysitter.AgentBabysitter debugUsageLimits`
+        UserDefaults.standard.set(
+            usageLimits.mapValues { "\($0.usedPercent.map { String(Int($0)) } ?? "-")% \($0.plan ?? "")" },
+            forKey: "debugUsageLimits")
         self.summary = summary
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost
@@ -315,21 +319,26 @@ final class AppModel: ObservableObject {
                 return
             }
         } else {
-            stopSharedHookPipelineIfUnused()
+            do {
+                try HooksInstaller.uninstall()
+            } catch {
+                hooksError = error.localizedDescription
+            }
+            stopHookWatcherIfUnused()
         }
         applyStoreConfiguration()
     }
 
-    /// The zero-network Claude usage meter: a status-line helper (terminal
-    /// sessions, updates continuously) plus the same hook entries Precision
-    /// mode uses (desktop app sessions, updates each turn). Both write to the
-    /// one event log the watcher tails.
+    /// The zero-network Claude usage meter: a status-line helper that records
+    /// the 5h % Claude Code computes for its terminal status line. Verified:
+    /// hook payloads do NOT carry rate_limits and the desktop app never runs
+    /// a status line, so terminal sessions are the only local source — the %
+    /// is account-wide, so one terminal session covers desktop usage too.
     private func applyClaudeUsageMeter() {
         hooksError = nil
         if claudeUsageMeterEnabled {
             do {
                 try StatusLineInstaller.install()
-                try HooksInstaller.install()
                 startHookWatcher()
             } catch {
                 hooksError = error.localizedDescription
@@ -342,22 +351,17 @@ final class AppModel: ObservableObject {
                 hooksError = error.localizedDescription
             }
             capturedUsage = [:]
-            stopSharedHookPipelineIfUnused()
+            stopHookWatcherIfUnused()
             Task { await refresh() }
         }
     }
 
-    /// Hooks and the event watcher are shared by Precision mode and the
-    /// usage meter — tear them down only when neither feature needs them.
-    private func stopSharedHookPipelineIfUnused() {
+    /// The event watcher tails one log shared by Precision-mode hooks and the
+    /// meter's status-line helper — stop it only when neither feature is on.
+    private func stopHookWatcherIfUnused() {
         guard !precisionModeEnabled, !claudeUsageMeterEnabled else { return }
         hookWatcher?.stop()
         hookWatcher = nil
-        do {
-            try HooksInstaller.uninstall()
-        } catch {
-            hooksError = error.localizedDescription
-        }
     }
 
     private func startHookWatcher() {
@@ -371,6 +375,8 @@ final class AppModel: ObservableObject {
         }, onUsage: { [weak self] snapshot in
             Task { @MainActor in
                 guard let self, self.claudeUsageMeterEnabled else { return }
+                BabysitterLog.hooks.info(
+                    "captured Claude usage \(Int(snapshot.usedPercent ?? -1))% from status line")
                 self.capturedUsage["claude-code"] = snapshot
                 await self.refresh()
             }
