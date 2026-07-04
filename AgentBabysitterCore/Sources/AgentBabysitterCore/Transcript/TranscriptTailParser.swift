@@ -11,8 +11,13 @@ public final class TranscriptTailParser {
     public private(set) var malformedLineCount = 0
 
     private var buffer = Data()
+    private let parseLine: @Sendable (Data) -> LineParseResult
 
-    public init() {}
+    /// `parseLine` defaults to the Claude Code schema; adapters inject their own.
+    public init(parseLine: @escaping @Sendable (Data) -> LineParseResult
+                    = { TranscriptLineParser.parse($0) }) {
+        self.parseLine = parseLine
+    }
 
     /// Consume newly appended bytes, returning every entry whose line was
     /// completed by this chunk.
@@ -48,7 +53,7 @@ public final class TranscriptTailParser {
     }
 
     private func append(line: Data, to entries: inout [TranscriptEntry]) {
-        switch TranscriptLineParser.parse(line) {
+        switch parseLine(line) {
         case .entry(let entry): entries.append(entry)
         case .empty: break
         case .malformed: malformedLineCount += 1

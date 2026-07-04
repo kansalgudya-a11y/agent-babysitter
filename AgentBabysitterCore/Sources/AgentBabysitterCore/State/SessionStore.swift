@@ -11,18 +11,23 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var pid: Int32?
     public var cwd: String?
     public var cost: SessionCost
-    /// "claude-desktop", "sdk-cli", … (from the transcript envelope).
+    /// "claude-desktop", "sdk-cli", "Codex Desktop", … (transcript envelope).
     public var entrypoint: String?
+    /// Which agent owns this session ("claude-code", "codex") + display name.
+    public var agentID: String
+    public var agentName: String
 
-    /// Session hosted by the Claude desktop app rather than a terminal.
+    /// Session hosted by a desktop app rather than a terminal.
     public var isDesktopApp: Bool {
         entrypoint?.hasPrefix("claude-desktop") == true
+            || entrypoint?.hasPrefix("Codex Desktop") == true
     }
 
     public init(id: String, projectName: String, state: SessionState,
                 turnStartedAt: Date?, lastGrowthAt: Date?, isUnreadable: Bool,
                 pid: Int32?, cwd: String?, cost: SessionCost = SessionCost(),
-                entrypoint: String? = nil) {
+                entrypoint: String? = nil,
+                agentID: String = "claude-code", agentName: String = "Claude Code") {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -33,6 +38,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.cwd = cwd
         self.cost = cost
         self.entrypoint = entrypoint
+        self.agentID = agentID
+        self.agentName = agentName
     }
 }
 
@@ -60,21 +67,27 @@ public actor SessionStore {
         public var activeWindow: TimeInterval
         public var precisionModeEnabled: Bool
 
+        /// Monitored agents. Defaults to Claude Code rooted at `projectsRoot`.
+        public var adapters: [any AgentAdapter]
+
         public init(projectsRoot: URL,
                     stallThreshold: TimeInterval = 300,
                     workingWindow: TimeInterval = 10,
                     activeWindow: TimeInterval = 24 * 3600,
-                    precisionModeEnabled: Bool = false) {
+                    precisionModeEnabled: Bool = false,
+                    adapters: [any AgentAdapter]? = nil) {
             self.projectsRoot = projectsRoot
             self.stallThreshold = stallThreshold
             self.workingWindow = workingWindow
             self.activeWindow = activeWindow
             self.precisionModeEnabled = precisionModeEnabled
+            self.adapters = adapters ?? [ClaudeCodeAdapter(transcriptRoot: projectsRoot)]
         }
     }
 
     private struct TrackedSession {
         let tailer: TranscriptFileTailer
+        let adapter: any AgentAdapter
         let projectDirName: String
         var pid: Int32?
         /// Sessions never seen with a process stay hidden (launch scan finds
@@ -100,22 +113,23 @@ public actor SessionStore {
 
     /// Launch scan: pick up transcripts modified within the active window.
     public func bootstrap() {
-        let found = SessionDirectoryScanner.recentTranscripts(under: configuration.projectsRoot,
-                                                              maxAge: configuration.activeWindow)
-        for info in found {
-            let url = configuration.projectsRoot
-                .appendingPathComponent(info.projectDirName)
-                .appendingPathComponent("\(info.sessionID).jsonl")
-            track(url: url, projectDirName: info.projectDirName)
+        for adapter in configuration.adapters {
+            for info in adapter.recentTranscripts(maxAge: configuration.activeWindow,
+                                                  now: Date()) {
+                guard let url = info.url else { continue }
+                track(url: url, adapter: adapter, projectDirName: info.projectDirName)
+            }
         }
     }
 
-    /// FSEvents callback: paths that changed under the projects root.
+    /// FSEvents callback: paths that changed under any adapter root.
     public func transcriptsChanged(paths: [String]) {
-        for path in paths where path.hasSuffix(".jsonl") {
+        for path in paths {
+            guard let adapter = configuration.adapters.first(where: { $0.isTranscript(path: path) })
+            else { continue }
             let url = URL(fileURLWithPath: path)
-            let projectDirName = url.deletingLastPathComponent().lastPathComponent
-            track(url: url, projectDirName: projectDirName)
+            track(url: url, adapter: adapter,
+                  projectDirName: url.deletingLastPathComponent().lastPathComponent)
         }
         rematch()
     }
@@ -123,7 +137,7 @@ public actor SessionStore {
     public func processesUpdated(_ update: ProcessWatcher.Update) {
         isProcessDetectionDegraded = update.degraded
         guard !update.degraded else { return }  // keep last known liveness
-        latestProcesses = update.processes
+        latestProcessesByAdapter = update.processesByAdapter
         rematch()
     }
 
@@ -135,7 +149,7 @@ public actor SessionStore {
 
     public func rows(at now: Date = Date()) -> [SessionRow] {
         var rows: [SessionRow] = []
-        for (id, tracked) in sessions where tracked.everHadProcess {
+        for (id, tracked) in sessions where tracked.everHadProcess && !tracked.tailer.isSidechain {
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,
                 lastGrowthAt: tracked.tailer.lastGrowthAt,
@@ -158,7 +172,9 @@ public actor SessionStore {
                 pid: tracked.pid,
                 cwd: cwd,
                 cost: tracked.tailer.costAccumulator.cost,
-                entrypoint: tracked.tailer.lastKnownEntrypoint))
+                entrypoint: tracked.tailer.lastKnownEntrypoint,
+                agentID: tracked.adapter.id,
+                agentName: tracked.adapter.displayName))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]
@@ -193,29 +209,35 @@ public actor SessionStore {
 
     // MARK: - Internals
 
-    private var latestProcesses: [RunningProcess] = []
+    private var latestProcessesByAdapter: [String: [RunningProcess]] = [:]
 
-    private func track(url: URL, projectDirName: String) {
-        if sessions[url.deletingPathExtension().lastPathComponent] == nil {
-            let tailer = TranscriptFileTailer(url: url)
-            sessions[tailer.sessionID] = TrackedSession(tailer: tailer,
-                                                        projectDirName: projectDirName)
+    private func track(url: URL, adapter: any AgentAdapter, projectDirName: String) {
+        let id = adapter.sessionID(forTranscript: url)
+        if sessions[id] == nil {
+            sessions[id] = TrackedSession(tailer: TranscriptFileTailer(url: url, adapter: adapter),
+                                          adapter: adapter,
+                                          projectDirName: projectDirName)
         }
-        let id = url.deletingPathExtension().lastPathComponent
         _ = try? sessions[id]?.tailer.catchUp()
     }
 
     private func rematch() {
-        let infos = sessions.map { id, tracked in
-            SessionFileInfo(sessionID: id,
-                            projectDirName: tracked.projectDirName,
-                            lastModified: tracked.tailer.lastGrowthAt ?? .distantPast)
-        }
-        let match = SessionProcessMatcher.match(processes: latestProcesses, sessions: infos)
-        for id in sessions.keys {
-            let pid = match[id]
-            sessions[id]?.pid = pid
-            if pid != nil { sessions[id]?.everHadProcess = true }
+        for adapter in configuration.adapters {
+            let candidates = sessions.compactMap { id, tracked -> SessionMatchCandidate? in
+                guard tracked.adapter.id == adapter.id else { return nil }
+                return SessionMatchCandidate(
+                    sessionID: id,
+                    projectDirName: tracked.projectDirName,
+                    lastKnownCWD: tracked.tailer.lastKnownCWD,
+                    lastModified: tracked.tailer.lastGrowthAt ?? .distantPast)
+            }
+            let match = adapter.match(processes: latestProcessesByAdapter[adapter.id] ?? [],
+                                      candidates: candidates)
+            for candidate in candidates {
+                let pid = match[candidate.sessionID]
+                sessions[candidate.sessionID]?.pid = pid
+                if pid != nil { sessions[candidate.sessionID]?.everHadProcess = true }
+            }
         }
     }
 }

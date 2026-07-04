@@ -23,11 +23,20 @@ enum TerminalFocuser {
         "com.microsoft.VSCode",
         "com.todesktop.230313mzl4w4u92",  // Cursor
         claudeDesktopBundleID,
+        "com.openai.codex",
+    ]
+
+    /// Per-agent desktop apps, tried first for desktop-hosted sessions.
+    static let agentBundleIDs: [String: [String]] = [
+        "claude-code": ["com.anthropic.claudefordesktop"],
+        "codex": ["com.openai.codex"],
     ]
 
     static func focusSession(_ row: SessionRow) {
-        if row.isDesktopApp, activate(bundleID: claudeDesktopBundleID) {
-            return
+        if row.isDesktopApp {
+            for bundleID in agentBundleIDs[row.agentID] ?? [] where activate(bundleID: bundleID) {
+                return
+            }
         }
         if let pid = row.pid {
             for ancestor in ProcessAncestry.ancestorPIDs(of: pid) {

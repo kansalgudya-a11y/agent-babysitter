@@ -47,9 +47,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var hooksError: String?
 
     private let projectsRoot: URL
+    private let adapters: [any AgentAdapter] = [ClaudeCodeAdapter(), CodexAdapter()]
     private let store: SessionStore
     private let processWatcher: ProcessWatcher
-    private var fsWatcher: FSEventsWatcher?
+    private var fsWatchers: [FSEventsWatcher] = []
     private var hookWatcher: HookEventWatcher?
     private var refreshTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
@@ -68,8 +69,9 @@ final class AppModel: ObservableObject {
         let precision = defaults.bool(forKey: "precisionModeEnabled")
         store = SessionStore(configuration: .init(projectsRoot: root,
                                                   stallThreshold: stallMinutes * 60,
-                                                  precisionModeEnabled: precision))
-        processWatcher = ProcessWatcher()
+                                                  precisionModeEnabled: precision,
+                                                  adapters: adapters))
+        processWatcher = ProcessWatcher(adapters: adapters)
         notificationsMuted = defaults.bool(forKey: "notificationsMuted")
         stallThresholdMinutes = stallMinutes
         notifyWaiting = defaults.bool(forKey: "notifyWaiting")
@@ -103,22 +105,28 @@ final class AppModel: ObservableObject {
             await self.refresh()
         }
 
-        let watcher = FSEventsWatcher(
-            url: projectsRoot,
-            onChange: { [weak self] paths in
-                Task {
-                    await store.transcriptsChanged(paths: paths)
-                    await self?.refresh()
-                }
-            },
-            onNeedsRescan: { [weak self] in
-                Task {
-                    await store.bootstrap()
-                    await self?.refresh()
-                }
-            })
-        watcher.start()
-        fsWatcher = watcher
+        fsWatchers.forEach { $0.stop() }
+        fsWatchers = adapters.compactMap { adapter in
+            guard FileManager.default.fileExists(atPath: adapter.transcriptRoot.path) else {
+                return nil
+            }
+            let watcher = FSEventsWatcher(
+                url: adapter.transcriptRoot,
+                onChange: { [weak self] paths in
+                    Task {
+                        await store.transcriptsChanged(paths: paths)
+                        await self?.refresh()
+                    }
+                },
+                onNeedsRescan: { [weak self] in
+                    Task {
+                        await store.bootstrap()
+                        await self?.refresh()
+                    }
+                })
+            watcher.start()
+            return watcher
+        }
 
         Task {
             await processWatcher.start { [weak self] update in
@@ -164,7 +172,8 @@ final class AppModel: ObservableObject {
         let configuration = SessionStore.Configuration(
             projectsRoot: projectsRoot,
             stallThreshold: stallThresholdMinutes * 60,
-            precisionModeEnabled: precisionModeEnabled)
+            precisionModeEnabled: precisionModeEnabled,
+            adapters: adapters)
         Task {
             await store.updateConfiguration(configuration)
             await refresh()

@@ -1,0 +1,3 @@
+{"timestamp":"2026-06-28T14:37:23.391Z","type":"session_meta","payload":{"session_id":"019f0ea4-8640-7602-8d4e-c06e1c5f6605","id":"019f0ea9-e616-7680-a356-6ea85016501e","parent_thread_id":"019f0ea4-8640-7602-8d4e-c06e1c5f6605","timestamp":"2026-06-28T14:37:23.350Z","cwd":"/Users/tester/demo-project","originator":"Codex Desktop","cli_version":"0.142.3","source":{"subagent":{"other":"guardian"}},"thread_source":"subagent","model_provider":"openai","base_instructions":{"text":"[redacted]"}}}
+{"timestamp":"2026-06-28T14:37:24.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"timestamp":"2026-06-28T14:37:31.200Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":null}}

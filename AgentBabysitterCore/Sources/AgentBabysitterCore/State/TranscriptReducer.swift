@@ -55,7 +55,12 @@ public struct TranscriptReducer: Equatable, Sendable {
                 // stop_sequence covers synthetic notices ("No response requested.")
                 turnPhase = .completed
             default:
-                turnPhase = .midTurn
+                // Usage-only bookkeeping entries (no content at all — e.g.
+                // Codex token_count events, which arrive after task_complete)
+                // must not reopen a finished turn.
+                if payload.hasText || payload.hasThinking || !payload.toolUses.isEmpty {
+                    turnPhase = .midTurn
+                }
             }
         }
     }

@@ -3,33 +3,40 @@ import Foundation
 /// Source of live agent processes. The real implementation shells out to
 /// ps/lsof; tests inject a fake.
 public protocol ProcessScanning: Sendable {
-    func scanClaudeProcesses() async throws -> [RunningProcess]
+    /// Live processes per adapter id.
+    func scanProcesses(for adapters: [any AgentAdapter]) async throws -> [String: [RunningProcess]]
 }
 
-/// Real scanner: `ps -axo pid=,args=` filtered to claude CLI processes, then
-/// one `lsof` call resolving all their cwds.
+/// Real scanner: one `ps` pass (comm= and args=), each adapter extracts its
+/// pids, then one `lsof` call resolves every cwd.
 public struct ShellProcessScanner: ProcessScanning {
 
     public init() {}
 
-    public func scanClaudeProcesses() async throws -> [RunningProcess] {
-        // comm= catches native `claude` binaries even when their path
-        // contains spaces; args= catches runtime-hosted installs
-        // (`node …/claude`). Union both.
+    public func scanProcesses(
+        for adapters: [any AgentAdapter]
+    ) async throws -> [String: [RunningProcess]] {
         let commOutput = try await run("/bin/ps", ["-axo", "pid=,comm="])
         let argsOutput = try await run("/bin/ps", ["-axo", "pid=,args="])
-        let pids = Array(Set(ProcessOutputParser.claudePIDs(fromPSComm: commOutput))
-            .union(ProcessOutputParser.claudePIDs(fromPS: argsOutput))).sorted()
-        guard !pids.isEmpty else { return [] }
 
-        let pidList = pids.map(String.init).joined(separator: ",")
+        var pidsByAdapter: [String: [Int32]] = [:]
+        for adapter in adapters {
+            pidsByAdapter[adapter.id] = adapter.agentPIDs(psComm: commOutput,
+                                                          psArgs: argsOutput)
+        }
+        let allPIDs = Set(pidsByAdapter.values.flatMap { $0 })
+        guard !allPIDs.isEmpty else {
+            return pidsByAdapter.mapValues { _ in [] }
+        }
+
+        let pidList = allPIDs.sorted().map(String.init).joined(separator: ",")
         // lsof exits non-zero if any pid vanished between ps and lsof; that's
         // fine — parse whatever it printed.
         let lsofOutput = (try? await run("/usr/sbin/lsof",
                                          ["-a", "-d", "cwd", "-Fn", "-p", pidList])) ?? ""
         let cwds = ProcessOutputParser.cwdsByPID(fromLSOF: lsofOutput)
-        return pids.compactMap { pid in
-            cwds[pid].map { RunningProcess(pid: pid, cwd: $0) }
+        return pidsByAdapter.mapValues { pids in
+            pids.compactMap { pid in cwds[pid].map { RunningProcess(pid: pid, cwd: $0) } }
         }
     }
 
@@ -57,26 +64,34 @@ public struct ShellProcessScanner: ProcessScanning {
 public actor ProcessWatcher {
 
     public struct Update: Equatable, Sendable {
-        public let processes: [RunningProcess]
-        /// True when the last scan failed and `processes` is stale.
+        public let processesByAdapter: [String: [RunningProcess]]
+        /// True when the last scan failed and the process map is stale.
         public let degraded: Bool
 
-        public init(processes: [RunningProcess], degraded: Bool) {
-            self.processes = processes
+        public init(processesByAdapter: [String: [RunningProcess]], degraded: Bool) {
+            self.processesByAdapter = processesByAdapter
             self.degraded = degraded
+        }
+
+        /// Convenience for the single-adapter (Claude Code) shape.
+        public init(processes: [RunningProcess], degraded: Bool) {
+            self.init(processesByAdapter: ["claude-code": processes], degraded: degraded)
         }
     }
 
     private let scanner: any ProcessScanning
+    private let adapters: [any AgentAdapter]
     private let interval: Duration
     private var pollTask: Task<Void, Never>?
     private var handler: (@Sendable (Update) -> Void)?
 
-    public private(set) var latest = Update(processes: [], degraded: false)
+    public private(set) var latest = Update(processesByAdapter: [:], degraded: false)
 
     public init(scanner: any ProcessScanning = ShellProcessScanner(),
+                adapters: [any AgentAdapter] = [ClaudeCodeAdapter()],
                 interval: Duration = .seconds(5)) {
         self.scanner = scanner
+        self.adapters = adapters
         self.interval = interval
     }
 
@@ -100,10 +115,10 @@ public actor ProcessWatcher {
     /// One scan cycle; exposed for tests to drive without the timer.
     public func pollOnce() async {
         do {
-            let processes = try await scanner.scanClaudeProcesses()
-            latest = Update(processes: processes, degraded: false)
+            let processes = try await scanner.scanProcesses(for: adapters)
+            latest = Update(processesByAdapter: processes, degraded: false)
         } catch {
-            latest = Update(processes: latest.processes, degraded: true)
+            latest = Update(processesByAdapter: latest.processesByAdapter, degraded: true)
         }
         handler?(latest)
     }

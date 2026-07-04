@@ -3,14 +3,20 @@ import Foundation
 /// A transcript file on disk, described by what the matcher needs.
 public struct SessionFileInfo: Equatable, Sendable {
     public let sessionID: String
-    /// Name of the directory under `~/.claude/projects/` holding this transcript.
+    /// Name of the directory holding this transcript (the munged cwd for
+    /// Claude Code; a date component for Codex — only meaningful to the
+    /// adapter that produced it).
     public let projectDirName: String
     public let lastModified: Date
+    /// Transcript file location (filled by launch scans).
+    public let url: URL?
 
-    public init(sessionID: String, projectDirName: String, lastModified: Date) {
+    public init(sessionID: String, projectDirName: String, lastModified: Date,
+                url: URL? = nil) {
         self.sessionID = sessionID
         self.projectDirName = projectDirName
         self.lastModified = lastModified
+        self.url = url
     }
 }
 

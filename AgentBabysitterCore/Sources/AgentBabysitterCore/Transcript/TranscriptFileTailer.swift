@@ -7,7 +7,7 @@ import Foundation
 public final class TranscriptFileTailer {
 
     public let url: URL
-    /// Session UUID, taken from the transcript filename.
+    /// Session id, derived from the transcript filename by the adapter.
     public let sessionID: String
 
     public private(set) var reducer = TranscriptReducer()
@@ -16,11 +16,15 @@ public final class TranscriptFileTailer {
     /// cwd from the most recent entry that carried one.
     public private(set) var lastKnownCWD: String?
     /// entrypoint from the most recent entry that carried one
-    /// ("claude-desktop", "sdk-cli", …).
+    /// ("claude-desktop", "sdk-cli", "Codex Desktop", …).
     public private(set) var lastKnownEntrypoint: String?
+    /// True once any entry marks this session as a subagent/sidechain —
+    /// hidden from the session list.
+    public private(set) var isSidechain = false
 
+    private let makeParser: @Sendable () -> TranscriptTailParser
     private var offset: UInt64 = 0
-    private var parser = TranscriptTailParser()
+    private var parser: TranscriptTailParser
 
     /// A transcript with this many undecodable lines is presumed corrupt;
     /// keep watching others but stop trusting this one.
@@ -30,9 +34,19 @@ public final class TranscriptFileTailer {
         parser.malformedLineCount > Self.unreadableThreshold
     }
 
-    public init(url: URL) {
+    /// Claude Code layout/schema (tests and default wiring).
+    public convenience init(url: URL) {
+        self.init(url: url, adapter: ClaudeCodeAdapter())
+    }
+
+    public init(url: URL, adapter: any AgentAdapter) {
         self.url = url
-        self.sessionID = url.deletingPathExtension().lastPathComponent
+        self.sessionID = adapter.sessionID(forTranscript: url)
+        let makeParser: @Sendable () -> TranscriptTailParser = {
+            TranscriptTailParser(parseLine: { adapter.parseLine($0) })
+        }
+        self.makeParser = makeParser
+        self.parser = makeParser()
     }
 
     /// Read appended bytes (if any) and fold them into the reducer.
@@ -44,7 +58,7 @@ public final class TranscriptFileTailer {
         if size < offset {
             // File shrank — rebuild from scratch rather than reading garbage.
             offset = 0
-            parser = TranscriptTailParser()
+            parser = makeParser()
             reducer = TranscriptReducer()
             costAccumulator = CostAccumulator()
         }
@@ -62,6 +76,7 @@ public final class TranscriptFileTailer {
             costAccumulator.consume(entry)
             if let cwd = entry.cwd { lastKnownCWD = cwd }
             if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
+            if entry.isSidechain { isSidechain = true }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()
         return entries
@@ -96,7 +111,8 @@ public enum SessionDirectoryScanner {
                 found.append(SessionFileInfo(
                     sessionID: file.deletingPathExtension().lastPathComponent,
                     projectDirName: dir.lastPathComponent,
-                    lastModified: modified))
+                    lastModified: modified,
+                    url: file))
             }
         }
         return found
