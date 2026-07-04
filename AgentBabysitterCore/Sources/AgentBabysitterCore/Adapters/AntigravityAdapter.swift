@@ -127,6 +127,20 @@ public struct AntigravityAdapter: AgentAdapter {
 
     public var isActivityBased: Bool { true }
 
+    /// Plan tier from the Antigravity IDE's stored account state, when
+    /// present ("Google AI Pro"). No percentage is stored anywhere on disk;
+    /// this is the most the local files reveal. Returns nil when the IDE
+    /// isn't installed or the state can't be read.
+    public func planFromDisk(
+        appSupport: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+    ) -> String? {
+        let db = appSupport
+            .appendingPathComponent("Antigravity IDE/User/globalStorage/state.vscdb")
+        guard let data = try? Data(contentsOf: db) else { return nil }
+        return AntigravityStateReader.planName(inStateDB: data)
+    }
+
     public func agentPIDs(psComm: String, psArgs: String) -> [Int32] {
         var pids: [Int32] = []
         for rawLine in psComm.split(separator: "\n") {

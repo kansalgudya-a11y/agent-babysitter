@@ -245,8 +245,10 @@ public actor SessionStore {
         return total
     }
 
-    /// Latest rate-limit reading per agent, newest capture wins. Agents that
-    /// never write one (Claude Code, Antigravity) simply have no entry.
+    /// Latest rate-limit reading per agent, newest capture wins. Codex writes
+    /// a real percentage to disk; Antigravity contributes its plan name (from
+    /// the IDE's stored state, no percentage exists locally); Claude Code has
+    /// no on-disk data (the app layer may add a live reading).
     public func usageLimits() -> [String: UsageLimitSnapshot] {
         var latest: [String: UsageLimitSnapshot] = [:]
         for (_, tracked) in sessions {
@@ -255,7 +257,24 @@ public actor SessionStore {
                existing.capturedAt >= limit.capturedAt { continue }
             latest[tracked.adapter.id] = limit
         }
+        // Antigravity: fill plan name from the IDE state for any surface with
+        // sessions listed (no percentage is stored anywhere on disk).
+        let antigravityIDsWithSessions = Set(sessions.values
+            .map(\.adapter.id).filter { $0.hasPrefix("antigravity") })
+        if !antigravityIDsWithSessions.isEmpty, let plan = antigravityPlan() {
+            for id in antigravityIDsWithSessions where latest[id] == nil {
+                latest[id] = UsageLimitSnapshot(usedPercent: nil, windowMinutes: 300,
+                                                resetsAt: nil, capturedAt: Date(), plan: plan)
+            }
+        }
         return latest
+    }
+
+    private func antigravityPlan() -> String? {
+        for case let adapter as AntigravityAdapter in configuration.adapters {
+            if let plan = adapter.planFromDisk() { return plan }
+        }
+        return nil
     }
 
     // MARK: - Internals

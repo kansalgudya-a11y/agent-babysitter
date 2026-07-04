@@ -60,7 +60,8 @@ if limits.isEmpty {
         let resets = limit.resetsAt.map {
             $0 < Date() ? "window reset" : "resets in \(Int($0.timeIntervalSinceNow / 60))m"
         } ?? "no reset time"
-        print("  [\(agentID)] \(Int(limit.usedPercent))% of \(limit.windowMinutes / 60)h window"
-            + "  plan=\(limit.plan ?? "?")  \(resets)")
+        let pct = limit.usedPercent.map { "\(Int($0))%" } ?? "—%"
+        print("  [\(agentID)] \(pct) of \(limit.windowMinutes / 60)h window"
+            + "  plan=\(limit.plan ?? "?")  live=\(limit.isLive)  \(resets)")
     }
 }

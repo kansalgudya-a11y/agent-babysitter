@@ -125,7 +125,7 @@ final class CodexAdapterTests: XCTestCase {
         let tailer = try tailerForFixture("codex_turn")
         _ = try tailer.catchUp()
         let limit = try XCTUnwrap(tailer.lastUsageLimit)
-        XCTAssertEqual(limit.usedPercent, 17.0)
+        XCTAssertEqual(limit.usedPercent, 17.0)  // Double? unwrapped by ==
         XCTAssertEqual(limit.windowMinutes, 300, "primary is the 5-hour window")
         XCTAssertEqual(limit.plan, "plus")
         XCTAssertEqual(limit.resetsAt?.timeIntervalSince1970, 1_782_210_974)

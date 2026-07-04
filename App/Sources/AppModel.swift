@@ -14,6 +14,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var noAgentsDetected = false
     @Published private(set) var todayCost = SessionCost()
     @Published private(set) var usageLimits: [String: UsageLimitSnapshot] = [:]
+    @Published var liveUsageEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(liveUsageEnabled, forKey: "liveUsageEnabled")
+            Task { await self.refreshLiveUsage() }
+        }
+    }
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
     }
@@ -61,6 +67,9 @@ final class AppModel: ObservableObject {
     private var onboardingPollTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
     private let notificationManager = NotificationManager()
+    private let liveUsageService = LiveUsageService()
+    private var liveUsage: [String: UsageLimitSnapshot] = [:]
+    private var liveUsageTimer: Timer?
 
     init() {
         let defaults = UserDefaults.standard
@@ -84,6 +93,7 @@ final class AppModel: ObservableObject {
         notifyDone = defaults.bool(forKey: "notifyDone")
         notifyStalled = defaults.bool(forKey: "notifyStalled")
         precisionModeEnabled = precision
+        liveUsageEnabled = defaults.bool(forKey: "liveUsageEnabled")
         launchAtLogin = SMAppService.mainApp.status == .enabled
         notificationManager.rowProvider = { [weak self] sessionID in
             self?.rows.first { $0.id == sessionID }
@@ -91,6 +101,27 @@ final class AppModel: ObservableObject {
         notificationManager.primeAuthorization()
         start()
         if precision { applyPrecisionMode() }
+        if liveUsageEnabled { Task { await refreshLiveUsage() } }
+    }
+
+    /// Poll live usage on a slow cadence while enabled (5h windows move slowly).
+    private func refreshLiveUsage() async {
+        liveUsageTimer?.invalidate()
+        liveUsageTimer = nil
+        guard liveUsageEnabled else {
+            liveUsage = [:]
+            await refresh()
+            return
+        }
+        liveUsage = await liveUsageService.fetch(enabled: true)
+        await refresh()
+        liveUsageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.liveUsageEnabled else { return }
+                self.liveUsage = await self.liveUsageService.fetch(enabled: true)
+                await self.refresh()
+            }
+        }
     }
 
     func dismissWelcome() {
@@ -211,7 +242,9 @@ final class AppModel: ObservableObject {
         let summary = await store.menuBarSummary()
         let degraded = await store.isProcessDetectionDegraded
         let todayCost = await store.todayCost()
-        let usageLimits = await store.usageLimits()
+        var usageLimits = await store.usageLimits()
+        // Live readings (opt-in) override on-disk for the same agent.
+        for (agentID, live) in liveUsage { usageLimits[agentID] = live }
         self.rows = rows
         self.usageLimits = usageLimits
         self.summary = summary

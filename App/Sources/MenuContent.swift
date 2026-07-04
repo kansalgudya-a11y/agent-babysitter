@@ -156,7 +156,17 @@ struct MenuContent: View {
                         .frame(width: 92, alignment: .leading)
                         .lineLimit(1)
                     if let limit = entry.limit {
-                        if let resets = limit.resetsAt, resets < Date() {
+                        if limit.usedPercent == nil, let plan = limit.plan {
+                            Text(plan)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("plan")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 44, alignment: .trailing)
+                                .help("Antigravity doesn't record a usage percentage on your Mac — only the plan tier is available offline.")
+                        } else if let resets = limit.resetsAt, resets < Date() {
                             ProgressView(value: 0)
                                 .tint(.green)
                             Text("reset")
@@ -165,10 +175,10 @@ struct MenuContent: View {
                                 .frame(width: 44, alignment: .trailing)
                                 .help("The 5-hour window rolled over; fresh numbers arrive with the next agent activity.")
                         } else {
-                            ProgressView(value: min(limit.usedPercent, 100) / 100)
-                                .tint(limit.usedPercent >= 90 ? .red
-                                      : limit.usedPercent >= 70 ? .orange : .green)
-                            Text("\(Int(limit.usedPercent))%")
+                            ProgressView(value: min(limit.usedPercent ?? 0, 100) / 100)
+                                .tint((limit.usedPercent ?? 0) >= 90 ? .red
+                                      : (limit.usedPercent ?? 0) >= 70 ? .orange : .green)
+                            Text("\(Int(limit.usedPercent ?? 0))%\(limit.isLive ? "" : "")")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                                 .frame(width: 44, alignment: .trailing)

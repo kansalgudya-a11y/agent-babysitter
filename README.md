@@ -49,11 +49,13 @@ disabling removes only our entries.
 - **Antigravity is activity-based** (no public conversation schema): states
   are Working/Done/Ended only, cost shows "—", and turn notifications are
   suppressed (a >60s silent think would otherwise flap).
-- **5-hour limits show where agents publish them locally**: Codex writes its
-  rate-limit readings into session logs from both the CLI and the desktop app,
-  so both surfaces work. Claude Code and Antigravity never write limit data to
-  disk on any surface (Antigravity fetches quota in memory only), so their
-  rows honestly say "not shared by this app" — no guessing, no network calls.
+- **5-hour limits, per agent**: Codex shows a real % from disk (CLI + desktop,
+  zero network). Antigravity shows its plan tier read from the IDE state
+  ("Google AI Pro", zero network) — no % is stored anywhere locally. Claude
+  Code publishes its 5h % only in live API responses, so it appears when you
+  enable the opt-in "Live usage" toggle (Settings → Advanced, OFF by default);
+  that is the only feature that ever makes a network call, and only to
+  api.anthropic.com with your own login.
 - **Costs are estimates at API list prices** — on subscription plans this is
   API-equivalent value, not spend. Sonnet 5 uses sticker pricing (intro rate
   runs through 2026-08-31).
