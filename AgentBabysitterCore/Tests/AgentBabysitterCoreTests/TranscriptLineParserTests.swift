@@ -165,6 +165,7 @@ final class TranscriptLineParserTests: XCTestCase {
         XCTAssertNotNil(prompt.text)
         XCTAssertTrue(prompt.toolResults.isEmpty)
         XCTAssertEqual(entries[2].sessionID, "d51bb435-50c0-4fdd-96b4-385367309534")
+        XCTAssertEqual(entries[2].entrypoint, "claude-desktop")
 
         // First assistant block-line: thinking, full usage
         guard case .assistant(let first) = entries[9].kind else { return XCTFail("line 10 should be assistant") }

@@ -45,7 +45,8 @@ public enum TranscriptLineParser {
             timestamp: (object["timestamp"] as? String).flatMap(parseTimestamp),
             sessionID: object["sessionId"] as? String,
             cwd: object["cwd"] as? String,
-            isSidechain: object["isSidechain"] as? Bool ?? false
+            isSidechain: object["isSidechain"] as? Bool ?? false,
+            entrypoint: object["entrypoint"] as? String
         )
     }
 

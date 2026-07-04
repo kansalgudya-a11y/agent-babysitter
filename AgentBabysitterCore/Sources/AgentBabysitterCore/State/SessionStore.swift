@@ -11,10 +11,18 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var pid: Int32?
     public var cwd: String?
     public var cost: SessionCost
+    /// "claude-desktop", "sdk-cli", … (from the transcript envelope).
+    public var entrypoint: String?
+
+    /// Session hosted by the Claude desktop app rather than a terminal.
+    public var isDesktopApp: Bool {
+        entrypoint?.hasPrefix("claude-desktop") == true
+    }
 
     public init(id: String, projectName: String, state: SessionState,
                 turnStartedAt: Date?, lastGrowthAt: Date?, isUnreadable: Bool,
-                pid: Int32?, cwd: String?, cost: SessionCost = SessionCost()) {
+                pid: Int32?, cwd: String?, cost: SessionCost = SessionCost(),
+                entrypoint: String? = nil) {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -24,6 +32,7 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.pid = pid
         self.cwd = cwd
         self.cost = cost
+        self.entrypoint = entrypoint
     }
 }
 
@@ -148,7 +157,8 @@ public actor SessionStore {
                 isUnreadable: tracked.tailer.isUnreadable,
                 pid: tracked.pid,
                 cwd: cwd,
-                cost: tracked.tailer.costAccumulator.cost))
+                cost: tracked.tailer.costAccumulator.cost,
+                entrypoint: tracked.tailer.lastKnownEntrypoint))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]

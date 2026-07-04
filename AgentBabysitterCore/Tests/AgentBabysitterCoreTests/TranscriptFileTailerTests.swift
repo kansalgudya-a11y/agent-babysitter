@@ -103,6 +103,15 @@ final class TranscriptFileTailerTests: XCTestCase {
         XCTAssertEqual(tailer.lastKnownCWD, "/Users/dev/appA")
     }
 
+    func testEntrypointIsCapturedFromEntries() throws {
+        let url = transcript()
+        let line = "{\"type\":\"user\",\"entrypoint\":\"claude-desktop\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n"
+        try line.write(to: url, atomically: false, encoding: .utf8)
+        let tailer = TranscriptFileTailer(url: url)
+        _ = try tailer.catchUp()
+        XCTAssertEqual(tailer.lastKnownEntrypoint, "claude-desktop")
+    }
+
     func testUnreadableAfterManyMalformedLines() throws {
         let url = transcript()
         var content = userLine("ok")

@@ -79,6 +79,9 @@ struct SessionRowView: View {
                     .lineLimit(1)
                 HStack(spacing: 4) {
                     Text(row.state.label)
+                    if row.isDesktopApp {
+                        Text("· Desktop")
+                    }
                     if let elapsed = elapsedText {
                         Text("· \(elapsed)")
                     }

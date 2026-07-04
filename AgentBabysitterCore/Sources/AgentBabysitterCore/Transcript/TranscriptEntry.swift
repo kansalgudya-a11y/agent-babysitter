@@ -114,4 +114,18 @@ public struct TranscriptEntry: Equatable, Sendable {
     public let sessionID: String?
     public let cwd: String?
     public let isSidechain: Bool
+    /// What launched the session: "claude-desktop" (desktop app),
+    /// "sdk-cli" (CLI/SDK), … — drives focus-on-click and the row badge.
+    public let entrypoint: String?
+
+    public init(kind: Kind, uuid: String?, timestamp: Date?, sessionID: String?,
+                cwd: String?, isSidechain: Bool, entrypoint: String? = nil) {
+        self.kind = kind
+        self.uuid = uuid
+        self.timestamp = timestamp
+        self.sessionID = sessionID
+        self.cwd = cwd
+        self.isSidechain = isSidechain
+        self.entrypoint = entrypoint
+    }
 }

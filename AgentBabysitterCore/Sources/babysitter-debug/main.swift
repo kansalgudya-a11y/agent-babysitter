@@ -35,8 +35,9 @@ for row in await store.rows() {
     let cost = row.cost.hasUnknownPricing
         ? "\(row.cost.totalTokens) tok (pricing unknown)"
         : String(format: "$%.2f", row.cost.dollars)
+    let host = row.isDesktopApp ? "desktop" : (row.entrypoint ?? "?")
     print("  [\(row.state)] \(row.projectName)  session=\(row.id.prefix(8))  "
-        + "pid=\(row.pid.map(String.init) ?? "-")  \(cost)")
+        + "pid=\(row.pid.map(String.init) ?? "-")  host=\(host)  \(cost)")
 }
 
 let today = await store.todayCost()

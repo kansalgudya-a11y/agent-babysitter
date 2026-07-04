@@ -181,6 +181,19 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(rows[0].cost.dollars, 2.0, accuracy: 0.0001)
     }
 
+    func testRowMarksDesktopAppSessions() async throws {
+        let desktopLine = "{\"type\":\"user\",\"cwd\":\"/Users/dev/appA\",\"entrypoint\":\"claude-desktop\",\"timestamp\":\"2026-07-04T10:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}"
+        try writeTranscript(project: "-Users-dev-appA", session: "aaa",
+                            cwd: "/Users/dev/appA", lines: [desktopLine])
+        let store = store()
+        await store.bootstrap()
+        await store.processesUpdated(.init(processes: [RunningProcess(pid: 1, cwd: "/Users/dev/appA")],
+                                           degraded: false))
+        let rows = await store.rows()
+        XCTAssertEqual(rows[0].entrypoint, "claude-desktop")
+        XCTAssertTrue(rows[0].isDesktopApp)
+    }
+
     func testMenuBarSummaryAggregatesWorstState() async throws {
         try writeTranscript(project: "-Users-dev-appA", session: "aaa", cwd: "/Users/dev/appA",
                             lines: [userLine("hi", cwd: "/Users/dev/appA")])

@@ -15,6 +15,9 @@ public final class TranscriptFileTailer {
     public private(set) var lastGrowthAt: Date?
     /// cwd from the most recent entry that carried one.
     public private(set) var lastKnownCWD: String?
+    /// entrypoint from the most recent entry that carried one
+    /// ("claude-desktop", "sdk-cli", …).
+    public private(set) var lastKnownEntrypoint: String?
 
     private var offset: UInt64 = 0
     private var parser = TranscriptTailParser()
@@ -58,6 +61,7 @@ public final class TranscriptFileTailer {
             reducer.consume(entry)
             costAccumulator.consume(entry)
             if let cwd = entry.cwd { lastKnownCWD = cwd }
+            if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()
         return entries
