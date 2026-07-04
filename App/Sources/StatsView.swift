@@ -53,7 +53,8 @@ struct StatsView: View {
     private static let agentNames = ["claude-code": "Claude Code", "codex": "Codex",
                                      "antigravity": "Antigravity",
                                      "antigravity-ide": "Antigravity IDE",
-                                     "antigravity-cli": "Antigravity CLI"]
+                                     "antigravity-cli": "Antigravity CLI",
+                                     "gemini": "Gemini", "gemini-cli": "Gemini CLI"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {

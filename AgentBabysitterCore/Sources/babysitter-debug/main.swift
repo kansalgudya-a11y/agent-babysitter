@@ -6,6 +6,7 @@ import AgentBabysitterCore
 
 let adapters: [any AgentAdapter] =
     [ClaudeCodeAdapter(), CodexAdapter()] + AntigravityAdapter.allSurfaces()
+    + GeminiAdapter.allSurfaces()
 let store = SessionStore(configuration: .init(
     projectsRoot: ClaudeCodeAdapter().transcriptRoot,
     adapters: adapters))
