@@ -161,18 +161,32 @@ enum UISnapshots {
                 welcomeDismissed: false)
         }
 
-        let statsModel = AppModel()
-        statsModel.applyFixture(
-            rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
-            usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
-            todayCost: SessionCost(dollars: 22.9), costHistory: history,
-            weekStats: WeekStats(costByAgent: ["claude-code": 261.3, "codex": 38.9,
-                                               "antigravity": 12.4],
-                                 sessionCount: 47, activeMinutes: 1_147,
-                                 days: history.map { (day: $0.day, dollars: $0.dollars,
-                                                      activeMinutes: [40.0, 190, 12, 300, 0, 420, 88][
-                                                          Int($0.day.timeIntervalSince(history[0].day) / 86_400)]) }))
-        results.append(("stats", AnyView(StatsView(model: statsModel))))
+        // ~100 days of plausible history so every range has shape.
+        let statsDays: [DayStat] = (0..<100).map { back in
+            let day = Calendar.current.startOfDay(
+                for: now.addingTimeInterval(Double(-back) * 86_400))
+            let wave = Double((back * 37) % 100)
+            return DayStat(day: day,
+                           dollars: wave * 1.6,
+                           byAgent: ["claude-code": wave * 1.1,
+                                     "codex": wave * 0.4,
+                                     "antigravity": wave * 0.1],
+                           activeMinutes: wave * 3.2,
+                           sessions: Int(wave / 12))
+        }.reversed()
+
+        func stats(_ name: String, _ range: StatsView.StatsRange) {
+            let model = AppModel()
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
+                todayCost: SessionCost(dollars: 22.9), costHistory: history,
+                statsDays: Array(statsDays))
+            results.append((name, AnyView(StatsView(model: model, initialRange: range))))
+        }
+        stats("stats-week", .week)
+        stats("stats-3months", .threeMonths)
+        stats("stats-alltime", .allTime)
 
         // Settings (Form/TabView) is AppKit-backed and invisible to
         // ImageRenderer — verified by eye in the running app instead.

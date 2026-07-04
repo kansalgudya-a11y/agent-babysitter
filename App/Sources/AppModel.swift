@@ -21,9 +21,9 @@ final class AppModel: ObservableObject {
     /// Observed daily cost totals, oldest first, at most 7 days. Accumulated
     /// locally — the store only retains 24h of sessions.
     @Published private(set) var costHistory: [(day: Date, dollars: Double)] = []
-    /// Week stats, persisted per local day: per-agent dollars, distinct
-    /// sessions seen, and minutes with at least one agent working.
-    @Published private(set) var weekStats = WeekStats()
+    /// Full per-day stats history (kept indefinitely, local-day buckets):
+    /// per-agent dollars, session counts, and active minutes.
+    @Published private(set) var statsDays: [DayStat] = []
     private var lastActiveTick = Date()
     @Published var liveUsageEnabled: Bool {
         didSet {
@@ -193,7 +193,7 @@ final class AppModel: ObservableObject {
                       noAgentsDetected: Bool = false,
                       welcomeDismissed: Bool = true,
                       processDetectionDegraded: Bool = false,
-                      weekStats: WeekStats = WeekStats()) {
+                      statsDays: [DayStat] = []) {
         self.rows = rows
         self.summary = summary
         self.usageLimits = usageLimits
@@ -205,7 +205,7 @@ final class AppModel: ObservableObject {
         self.noAgentsDetected = noAgentsDetected
         self.welcomeDismissed = welcomeDismissed
         self.processDetectionDegraded = processDetectionDegraded
-        self.weekStats = weekStats
+        self.statsDays = statsDays
     }
 
     /// Poll live usage on a slow cadence while enabled. Each probe costs one
@@ -399,7 +399,7 @@ final class AppModel: ObservableObject {
             forKey: "debugAgents")
         deliverLimitAlerts(usageLimits)
         recordCostHistory(todayCost.dollars)
-        await recordWeekStats(rows: rows)
+        await recordStats(rows: rows)
         adaptRefreshCadence()
         self.summary = summary
         self.processDetectionDegraded = degraded
@@ -420,9 +420,11 @@ final class AppModel: ObservableObject {
                                     stallThresholdMinutes: Int(stallThresholdMinutes))
     }
 
-    /// Per-day per-agent dollars, session ids, and active minutes — the
-    /// stats window's data. All local-day keyed, pruned to 7 days.
-    private func recordWeekStats(rows: [SessionRow]) async {
+    /// Per-day per-agent dollars, session counts, and active minutes — the
+    /// stats window's data. Local-day keyed and kept indefinitely so the
+    /// window can show a week, three months, or all time. Session ids are
+    /// retained only for today (dedup); past days collapse to counts.
+    private func recordStats(rows: [SessionRow]) async {
         let defaults = UserDefaults.standard
         let today = DailyCostHistory.key(for: Date())
 
@@ -434,10 +436,17 @@ final class AppModel: ObservableObject {
         }
         byAgent[today] = mergedToday
 
-        var sessionsSeen = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] ?? [:]
-        var todayIDs = Set(sessionsSeen[today] ?? [])
+        var counts = defaults.dictionary(forKey: "sessionCounts") as? [String: Int] ?? [:]
+        // One-time migration from the 7-day id-list format.
+        if let legacy = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] {
+            for (day, ids) in legacy where counts[day] == nil { counts[day] = ids.count }
+            defaults.removeObject(forKey: "sessionsSeen")
+        }
+        var todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
+        var todayIDs = Set(todaySeen[today] ?? [])
         todayIDs.formUnion(rows.map(\.id))
-        sessionsSeen[today] = Array(todayIDs)
+        todaySeen = [today: Array(todayIDs)]  // past days live in counts only
+        counts[today] = todayIDs.count
 
         var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
         let tick = Date()
@@ -448,36 +457,27 @@ final class AppModel: ObservableObject {
         }
         lastActiveTick = tick
 
-        // Prune everything to the trailing week.
-        let liveKeys = Set((0..<7).map {
-            DailyCostHistory.key(for: Date().addingTimeInterval(Double(-$0) * 86_400))
-        })
-        byAgent = byAgent.filter { liveKeys.contains($0.key) }
-        sessionsSeen = sessionsSeen.filter { liveKeys.contains($0.key) }
-        activeMinutes = activeMinutes.filter { liveKeys.contains($0.key) }
         defaults.set(byAgent, forKey: "costByAgent")
-        defaults.set(sessionsSeen, forKey: "sessionsSeen")
+        defaults.set(counts, forKey: "sessionCounts")
+        defaults.set(todaySeen, forKey: "sessionsSeenToday")
         defaults.set(activeMinutes, forKey: "activeMinutes")
 
         let costTotals = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
-        let days = DailyCostHistory.series(costTotals).map { entry in
-            (day: entry.day, dollars: entry.dollars,
-             activeMinutes: activeMinutes[DailyCostHistory.key(for: entry.day)] ?? 0)
+        statsDays = DailyCostHistory.series(costTotals).map { entry in
+            let key = DailyCostHistory.key(for: entry.day)
+            return DayStat(day: entry.day, dollars: entry.dollars,
+                           byAgent: byAgent[key] ?? [:],
+                           activeMinutes: activeMinutes[key] ?? 0,
+                           sessions: counts[key] ?? 0)
         }
-        weekStats = WeekStats(
-            costByAgent: byAgent.values.reduce(into: [:]) { totals, day in
-                for (agent, dollars) in day { totals[agent, default: 0] += dollars }
-            },
-            sessionCount: sessionsSeen.values.reduce(0) { $0 + $1.count },
-            activeMinutes: activeMinutes.values.reduce(0, +),
-            days: days)
     }
 
     /// Fold today's running total into the persisted 7-day history. Max
     /// guards against dips when old sessions prune out mid-day.
     private func recordCostHistory(_ todayDollars: Double) {
         let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
-        let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars)
+        let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars,
+                                               keepDays: 3650)
         UserDefaults.standard.set(updated, forKey: "costHistory")
         costHistory = DailyCostHistory.series(updated)
     }
