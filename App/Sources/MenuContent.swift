@@ -3,6 +3,7 @@ import AgentBabysitterCore
 
 struct MenuContent: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -47,6 +48,14 @@ struct MenuContent: View {
                 }
                 .buttonStyle(.borderless)
                 .help(model.notificationsMuted ? "Notifications muted" : "Mute notifications")
+                Button {
+                    openSettings()
+                    NSApp.activate()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Preferences")
                 Button("Quit") { NSApp.terminate(nil) }
                     .buttonStyle(.borderless)
                     .font(.caption)

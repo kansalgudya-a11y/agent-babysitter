@@ -13,6 +13,10 @@ struct AgentBabysitterApp: App {
             MenuBarLabel(summary: model.summary)
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            PreferencesView(model: model)
+        }
     }
 }
 
