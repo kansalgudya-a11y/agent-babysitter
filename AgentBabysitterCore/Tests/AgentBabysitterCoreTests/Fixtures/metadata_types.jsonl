@@ -1,0 +1,7 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-07-01T21:01:51.335Z","sessionId":"438dd557-fba9-4ead-b130-964a1fac0b88","content":"[redacted]"}
+{"type":"ai-title","aiTitle":"[redacted]","sessionId":"6748cb56-e583-4e3b-aaae-d41388c12d94"}
+{"type":"last-prompt","lastPrompt":"[redacted]","leafUuid":"103f6e5d-2e82-42e5-95f8-3fd5b478c4c7","sessionId":"6748cb56-e583-4e3b-aaae-d41388c12d94"}
+{"type":"mode","mode":"normal","sessionId":"6748cb56-e583-4e3b-aaae-d41388c12d94"}
+{"type":"custom-title","customTitle":"[redacted]","sessionId":"4fa076d9-9289-46b2-85d7-b0968424abb1"}
+{"parentUuid":"0d85cb57-0e10-4359-860e-1f652d2a4024","isSidechain":false,"attachment":{"type":"redacted"},"type":"attachment","uuid":"798c3443-9b58-41dc-b5f5-e67e049492c4","timestamp":"2026-07-01T21:01:51.390Z","userType":"external","entrypoint":"claude-desktop","cwd":"/Users/tester/demo-project","sessionId":"438dd557-fba9-4ead-b130-964a1fac0b88","version":"2.1.197","gitBranch":"HEAD"}
+{"parentUuid":"40ddc5c0-0d0d-4a59-a3f5-5248efccf742","isSidechain":false,"type":"system","subtype":"stop_hook_summary","hookCount":2,"hookInfos":[],"hookErrors":[],"preventedContinuation":false,"stopReason":"","hasOutput":false,"level":"suggestion","timestamp":"2026-05-10T08:37:00.213Z","uuid":"07d84c0e-97b0-48f5-99da-a4d23a8ea1b2","toolUseID":"737dea41-fa4e-4fb6-b3c3-83981ddfb7bb","userType":"external","entrypoint":"claude-desktop","cwd":"/Users/tester/demo-project","sessionId":"e54b446e-1e60-4d41-bb7c-391bf0339c0d","version":"2.1.128","gitBranch":"HEAD"}
