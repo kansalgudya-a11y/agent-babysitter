@@ -7,10 +7,10 @@ struct MenuContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if model.claudeDirectoryMissing {
+            if model.noAgentsDetected {
                 OnboardingView(model: model)
             } else if model.rows.isEmpty {
-                Text("No Claude Code sessions in the last 24 hours.")
+                Text("No agent sessions in the last 24 hours.")
                     .foregroundStyle(.secondary)
                     .padding()
             } else {
@@ -140,9 +140,9 @@ struct OnboardingView: View {
             Image(systemName: "binoculars")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
-            Text("Claude Code not detected")
+            Text("No coding agents detected")
                 .fontWeight(.semibold)
-            Text("Agent Babysitter watches ~/.claude/projects, which doesn't exist yet. Run Claude Code once, then retry.")
+            Text("Agent Babysitter watches Claude Code (~/.claude), Codex (~/.codex), and Antigravity (~/.gemini). None have session data yet — run any of them once, then retry. The app also picks new agents up automatically while running.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

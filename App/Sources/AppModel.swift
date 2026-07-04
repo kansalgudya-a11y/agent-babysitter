@@ -11,7 +11,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var rows: [SessionRow] = []
     @Published private(set) var summary = MenuBarSummary(worstState: nil, activeCount: 0)
     @Published private(set) var processDetectionDegraded = false
-    @Published private(set) var claudeDirectoryMissing = false
+    @Published private(set) var noAgentsDetected = false
     @Published private(set) var todayCost = SessionCost()
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
@@ -52,6 +52,7 @@ final class AppModel: ObservableObject {
     private let store: SessionStore
     private let processWatcher: ProcessWatcher
     private var fsWatchers: [FSEventsWatcher] = []
+    private var watchedRoots: Set<URL> = []
     private var hookWatcher: HookEventWatcher?
     private var refreshTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
@@ -92,13 +93,16 @@ final class AppModel: ObservableObject {
     }
 
     private func start() {
-        guard FileManager.default.fileExists(atPath: projectsRoot.path) else {
-            // Onboarding: Claude Code not installed / never run. Idle cheaply
-            // until the user hits Retry.
-            claudeDirectoryMissing = true
-            return
+        // The app works with ANY subset of agents installed; onboarding only
+        // when none have ever produced data.
+        let availableRoots = adapters.map(\.transcriptRoot)
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !availableRoots.isEmpty else {
+            noAgentsDetected = true
+            return  // idle cheaply; Retry re-checks, and the refresh timer
+                    // isn't running so nothing polls
         }
-        claudeDirectoryMissing = false
+        noAgentsDetected = false
 
         let store = store
         Task {
@@ -107,27 +111,9 @@ final class AppModel: ObservableObject {
         }
 
         fsWatchers.forEach { $0.stop() }
-        fsWatchers = adapters.compactMap { adapter in
-            guard FileManager.default.fileExists(atPath: adapter.transcriptRoot.path) else {
-                return nil
-            }
-            let watcher = FSEventsWatcher(
-                url: adapter.transcriptRoot,
-                onChange: { [weak self] paths in
-                    Task {
-                        await store.transcriptsChanged(paths: paths)
-                        await self?.refresh()
-                    }
-                },
-                onNeedsRescan: { [weak self] in
-                    Task {
-                        await store.bootstrap()
-                        await self?.refresh()
-                    }
-                })
-            watcher.start()
-            return watcher
-        }
+        fsWatchers = []
+        watchedRoots = []
+        for root in availableRoots { addWatcher(for: root) }
 
         Task {
             await processWatcher.start { [weak self] update in
@@ -146,7 +132,50 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Watch an adapter root; used at start and when a root appears later
+    /// (agent installed while the app is running).
+    private func addWatcher(for root: URL) {
+        guard !watchedRoots.contains(root) else { return }
+        let store = store
+        let watcher = FSEventsWatcher(
+            url: root,
+            onChange: { [weak self] paths in
+                Task {
+                    await store.transcriptsChanged(paths: paths)
+                    await self?.refresh()
+                }
+            },
+            onNeedsRescan: { [weak self] in
+                Task {
+                    await store.bootstrap()
+                    await self?.refresh()
+                }
+            })
+        watcher.start()
+        fsWatchers.append(watcher)
+        watchedRoots.insert(root)
+    }
+
+    /// Pick up agents installed after launch: when a known root appears,
+    /// watch it and rescan. Runs on the 2s refresh tick — five fileExists
+    /// checks, negligible.
+    private func adoptNewlyInstalledAgents() {
+        for adapter in adapters {
+            let root = adapter.transcriptRoot
+            if !watchedRoots.contains(root),
+               FileManager.default.fileExists(atPath: root.path) {
+                addWatcher(for: root)
+                let store = store
+                Task {
+                    await store.bootstrap()
+                    await self.refresh()
+                }
+            }
+        }
+    }
+
     private func refresh() async {
+        adoptNewlyInstalledAgents()
         let rows = await store.rows()
         let summary = await store.menuBarSummary()
         let degraded = await store.isProcessDetectionDegraded
