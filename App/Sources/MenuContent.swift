@@ -35,6 +35,10 @@ struct MenuContent: View {
             }
 
             Divider()
+            if !limitEntries.isEmpty {
+                limitsSection
+                Divider()
+            }
             footer
         }
         .frame(width: 330)
@@ -128,6 +132,73 @@ struct MenuContent: View {
             .padding(.vertical, 6)
         }
         .frame(maxHeight: 380)
+    }
+
+    /// One entry per agent that has sessions listed: its 5h reading when the
+    /// agent records one locally, an honest "no data" otherwise.
+    private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?)] {
+        groupedRows.map { group in
+            // Antigravity surfaces share one Gemini quota; none expose it.
+            (id: group.agentID, name: group.agentName, limit: model.usageLimits[group.agentID])
+        }
+    }
+
+    private var limitsSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("5-hour limits")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            ForEach(limitEntries, id: \.id) { entry in
+                HStack(spacing: 8) {
+                    Text(entry.name)
+                        .font(.caption)
+                        .frame(width: 92, alignment: .leading)
+                        .lineLimit(1)
+                    if let limit = entry.limit {
+                        if let resets = limit.resetsAt, resets < Date() {
+                            ProgressView(value: 0)
+                                .tint(.green)
+                            Text("reset")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                                .help("The 5-hour window rolled over; fresh numbers arrive with the next agent activity.")
+                        } else {
+                            ProgressView(value: min(limit.usedPercent, 100) / 100)
+                                .tint(limit.usedPercent >= 90 ? .red
+                                      : limit.usedPercent >= 70 ? .orange : .green)
+                            Text("\(Int(limit.usedPercent))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                                .help(limitHelp(limit))
+                        }
+                    } else {
+                        Text("not shared by this app")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .help("This agent doesn't record its limit usage on your Mac, and Agent Babysitter never guesses or phones home.")
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func limitHelp(_ limit: UsageLimitSnapshot) -> String {
+        var parts: [String] = []
+        if let plan = limit.plan { parts.append("\(plan.capitalized) plan") }
+        if let resets = limit.resetsAt, resets > Date() {
+            let minutes = Int(resets.timeIntervalSinceNow / 60)
+            parts.append(minutes >= 60 ? "resets in \(minutes / 60)h \(minutes % 60)m"
+                                       : "resets in \(minutes)m")
+        }
+        let age = Int(Date().timeIntervalSince(limit.capturedAt) / 60)
+        parts.append(age < 1 ? "just updated" : "as of \(age)m ago")
+        return parts.joined(separator: " · ")
     }
 
     private var footer: some View {

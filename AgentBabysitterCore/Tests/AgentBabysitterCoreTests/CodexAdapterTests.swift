@@ -121,6 +121,16 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertEqual(tokens(40), 40, "counter reset -> fresh count")
     }
 
+    func testRateLimitSnapshotIsExtracted() throws {
+        let tailer = try tailerForFixture("codex_turn")
+        _ = try tailer.catchUp()
+        let limit = try XCTUnwrap(tailer.lastUsageLimit)
+        XCTAssertEqual(limit.usedPercent, 17.0)
+        XCTAssertEqual(limit.windowMinutes, 300, "primary is the 5-hour window")
+        XCTAssertEqual(limit.plan, "plus")
+        XCTAssertEqual(limit.resetsAt?.timeIntervalSince1970, 1_782_210_974)
+    }
+
     func testGarbageLineIsMalformed() {
         guard case .malformed = CodexRolloutParser.parse(Data("not json".utf8), usageState: nil) else {
             return XCTFail("expected malformed")
@@ -186,5 +196,9 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertEqual(rows[0].pid, 9)
         XCTAssertTrue(rows[0].isDesktopApp)
         XCTAssertEqual(rows[0].state, .done, "fixture turn is complete")
+
+        let limits = await store.usageLimits()
+        XCTAssertEqual(limits["codex"]?.usedPercent, 17.0)
+        XCTAssertNil(limits["claude-code"], "agents without local limit data have no entry")
     }
 }

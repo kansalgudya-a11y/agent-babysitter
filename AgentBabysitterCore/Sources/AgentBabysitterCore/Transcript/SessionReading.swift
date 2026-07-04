@@ -19,6 +19,8 @@ public protocol SessionReading: AnyObject {
     /// Cost bucketed by local day of entry timestamps (empty when the
     /// reader can't attribute usage).
     var dailyCosts: [Date: SessionCost] { get }
+    /// Latest subscription rate-limit reading seen in this transcript.
+    var usageLimit: UsageLimitSnapshot? { get }
     /// Pick up whatever changed on disk since the last call.
     func refresh() throws
 }
@@ -29,6 +31,7 @@ extension TranscriptFileTailer: SessionReading {
     public var currentTurnStartedAt: Date? { reducer.currentTurnStartedAt }
     public var cost: SessionCost { costAccumulator.cost }
     public var dailyCosts: [Date: SessionCost] { costAccumulator.dailyCosts }
+    public var usageLimit: UsageLimitSnapshot? { lastUsageLimit }
 
     public func refresh() throws {
         _ = try catchUp()
@@ -51,6 +54,7 @@ public final class FileActivityReader: SessionReading {
     public let hasPendingToolUses = false
     public let cost = SessionCost()
     public let dailyCosts: [Date: SessionCost] = [:]
+    public let usageLimit: UsageLimitSnapshot? = nil
 
     public private(set) var lastGrowthAt: Date?
     public private(set) var currentTurnStartedAt: Date?

@@ -98,6 +98,25 @@ public struct UserPayload: Equatable, Sendable {
     public let toolResults: [ToolResultRef]
 }
 
+/// A subscription rate-limit reading an agent wrote into its transcript
+/// (Codex embeds one per token_count). `usedPercent` is 0-100 of the window.
+public struct UsageLimitSnapshot: Equatable, Sendable {
+    public let usedPercent: Double
+    public let windowMinutes: Int
+    public let resetsAt: Date?
+    public let capturedAt: Date
+    public let plan: String?
+
+    public init(usedPercent: Double, windowMinutes: Int, resetsAt: Date?,
+                capturedAt: Date, plan: String?) {
+        self.usedPercent = usedPercent
+        self.windowMinutes = windowMinutes
+        self.resetsAt = resetsAt
+        self.capturedAt = capturedAt
+        self.plan = plan
+    }
+}
+
 /// A single parsed transcript line.
 public struct TranscriptEntry: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
@@ -117,9 +136,12 @@ public struct TranscriptEntry: Equatable, Sendable {
     /// What launched the session: "claude-desktop" (desktop app),
     /// "sdk-cli" (CLI/SDK), … — drives focus-on-click and the row badge.
     public let entrypoint: String?
+    /// Rate-limit reading carried by this line, when the agent records one.
+    public let usageLimit: UsageLimitSnapshot?
 
     public init(kind: Kind, uuid: String?, timestamp: Date?, sessionID: String?,
-                cwd: String?, isSidechain: Bool, entrypoint: String? = nil) {
+                cwd: String?, isSidechain: Bool, entrypoint: String? = nil,
+                usageLimit: UsageLimitSnapshot? = nil) {
         self.kind = kind
         self.uuid = uuid
         self.timestamp = timestamp
@@ -127,5 +149,6 @@ public struct TranscriptEntry: Equatable, Sendable {
         self.cwd = cwd
         self.isSidechain = isSidechain
         self.entrypoint = entrypoint
+        self.usageLimit = usageLimit
     }
 }

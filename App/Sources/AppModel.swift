@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var processDetectionDegraded = false
     @Published private(set) var noAgentsDetected = false
     @Published private(set) var todayCost = SessionCost()
+    @Published private(set) var usageLimits: [String: UsageLimitSnapshot] = [:]
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
     }
@@ -210,7 +211,9 @@ final class AppModel: ObservableObject {
         let summary = await store.menuBarSummary()
         let degraded = await store.isProcessDetectionDegraded
         let todayCost = await store.todayCost()
+        let usageLimits = await store.usageLimits()
         self.rows = rows
+        self.usageLimits = usageLimits
         self.summary = summary
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost

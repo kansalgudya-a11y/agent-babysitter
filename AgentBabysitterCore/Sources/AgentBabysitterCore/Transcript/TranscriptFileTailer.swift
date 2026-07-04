@@ -21,6 +21,8 @@ public final class TranscriptFileTailer {
     /// True once any entry marks this session as a subagent/sidechain —
     /// hidden from the session list.
     public private(set) var isSidechain = false
+    /// Latest rate-limit reading in file order.
+    public private(set) var lastUsageLimit: UsageLimitSnapshot?
 
     private let makeParser: @Sendable () -> TranscriptTailParser
     private var offset: UInt64 = 0
@@ -83,6 +85,7 @@ public final class TranscriptFileTailer {
             if let cwd = entry.cwd { lastKnownCWD = cwd }
             if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
             if entry.isSidechain { isSidechain = true }
+            if let limit = entry.usageLimit { lastUsageLimit = limit }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()
         return entries

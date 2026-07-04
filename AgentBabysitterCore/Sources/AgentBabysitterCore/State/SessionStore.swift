@@ -245,6 +245,19 @@ public actor SessionStore {
         return total
     }
 
+    /// Latest rate-limit reading per agent, newest capture wins. Agents that
+    /// never write one (Claude Code, Antigravity) simply have no entry.
+    public func usageLimits() -> [String: UsageLimitSnapshot] {
+        var latest: [String: UsageLimitSnapshot] = [:]
+        for (_, tracked) in sessions {
+            guard let limit = tracked.reader.usageLimit else { continue }
+            if let existing = latest[tracked.adapter.id],
+               existing.capturedAt >= limit.capturedAt { continue }
+            latest[tracked.adapter.id] = limit
+        }
+        return latest
+    }
+
     // MARK: - Internals
 
     private var latestProcessesByAdapter: [String: [RunningProcess]] = [:]

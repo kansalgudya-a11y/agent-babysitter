@@ -148,10 +148,12 @@ enum CodexRolloutParser {
                    sessionID: String? = nil,
                    cwd: String? = nil,
                    isSidechain: Bool = false,
-                   entrypoint: String? = nil) -> LineParseResult {
+                   entrypoint: String? = nil,
+                   usageLimit: UsageLimitSnapshot? = nil) -> LineParseResult {
             .entry(TranscriptEntry(kind: kind, uuid: nil, timestamp: timestamp,
                                    sessionID: sessionID, cwd: cwd,
-                                   isSidechain: isSidechain, entrypoint: entrypoint))
+                                   isSidechain: isSidechain, entrypoint: entrypoint,
+                                   usageLimit: usageLimit))
         }
 
         func usageOnlyAssistant(_ usage: TokenUsage) -> TranscriptEntry.Kind {
@@ -238,10 +240,25 @@ enum CodexRolloutParser {
                                        outputTokens: dOut,
                                        cacheCreationInputTokens: 0,
                                        cacheReadInputTokens: dCached)
+                // Subscription 5h/weekly window readings ride along on
+                // token_count. Primary is the 300-minute window.
+                var limit: UsageLimitSnapshot?
+                if let rateLimits = payload["rate_limits"] as? [String: Any],
+                   let primary = rateLimits["primary"] as? [String: Any],
+                   let usedPercent = primary["used_percent"] as? Double {
+                    let resets = (primary["resets_at"] as? Double)
+                        .map { Date(timeIntervalSince1970: $0) }
+                    limit = UsageLimitSnapshot(
+                        usedPercent: usedPercent,
+                        windowMinutes: primary["window_minutes"] as? Int ?? 300,
+                        resetsAt: resets,
+                        capturedAt: timestamp ?? Date(),
+                        plan: rateLimits["plan_type"] as? String)
+                }
                 // Usage-only: phase-neutral in the reducer (arrives after
                 // task_complete). Model pricing is unknown by design — token
                 // counts are shown, dollars are never guessed.
-                return entry(usageOnlyAssistant(usage))
+                return entry(usageOnlyAssistant(usage), usageLimit: limit)
             default:  // agent_message/user_message duplicate response_items
                 return entry(.meta(rawType: payload["type"] as? String ?? type))
             }
