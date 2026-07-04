@@ -32,6 +32,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.body = body(for: event, row: row, stallMinutes: stallThresholdMinutes)
             content.userInfo = ["sessionID": event.sessionID]
             content.sound = .default
+            content.categoryIdentifier = "session-event"
             // One identifier per session: a newer state replaces the older
             // banner instead of stacking (three flapping sessions used to
             // wallpaper the corner of the screen).
@@ -67,10 +68,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private func body(for event: NotificationEvent, row: SessionRow,
                       stallMinutes: Int) -> String {
+        // With Precision mode on, the hook payload tells us what the agent
+        // actually said — a banner you can act on without switching windows.
+        let detail = freshDetail(row)
         switch event.kind {
         case .waitingForInput:
+            if let detail, detail.kind == .waitingForInput {
+                return "\(row.projectName): \(detail.text)"
+            }
             return "Session \(row.projectName) needs your input."
         case .turnCompleted:
+            if let detail, detail.kind == .turnCompleted {
+                return "\(row.projectName) done: \(detail.text)"
+            }
             if row.cost.hasUnknownPricing || row.cost.dollars == 0 {
                 return "Session \(row.projectName) finished its turn."
             }
@@ -81,11 +91,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// The hook detail, only when it plausibly belongs to this event
+    /// (right kind, captured within the last couple of minutes).
+    private func freshDetail(_ row: SessionRow) -> (kind: HookSignal.Kind, text: String)? {
+        guard let signal = row.hookDetail, let text = signal.detail,
+              Date().timeIntervalSince(signal.timestamp) < 150 else { return nil }
+        return (signal.kind, text)
+    }
+
     private func requestAuthorizationIfNeeded() {
         guard !authorizationRequested else { return }
         authorizationRequested = true
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Snooze action on session banners.
+        let snooze = UNNotificationAction(identifier: "snooze10",
+                                          title: "Remind me in 10 min")
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: "session-event", actions: [snooze],
+                                   intentIdentifiers: []),
+        ])
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -93,8 +118,18 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let sessionID = response.notification.request.content
-            .userInfo["sessionID"] as? String
+        let request = response.notification.request
+        let sessionID = request.content.userInfo["sessionID"] as? String
+        if response.actionIdentifier == "snooze10" {
+            // Same banner again in ten minutes.
+            let redelivery = UNNotificationRequest(
+                identifier: request.identifier + "-snoozed",
+                content: request.content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 600, repeats: false))
+            center.add(redelivery)
+            completionHandler()
+            return
+        }
         completionHandler()
         guard let sessionID else { return }
         Task { @MainActor in

@@ -14,13 +14,21 @@ struct AgentBabysitterApp: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            MenuBarLabel(summary: model.summary, limitDanger: model.limitDanger)
+            MenuBarLabel(summary: model.summary, limitDanger: model.limitDanger,
+                         style: model.menuBarStyle,
+                         costToday: model.todayCost.dollars,
+                         hottestLimit: model.hottestLimitPercent)
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             PreferencesView(model: model)
         }
+
+        Window("Agent Stats", id: "stats") {
+            StatsView(model: model)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -29,10 +37,36 @@ struct AgentBabysitterApp: App {
 struct MenuBarLabel: View {
     let summary: MenuBarSummary
     var limitDanger = false
+    var style = "status"
+    var costToday = 0.0
+    var hottestLimit: Double?
 
     var body: some View {
         // ⚠️ prefixes everything when any usage window is at 90%+ — the
         // babysitter's job is exactly this warning.
+        let warning = limitDanger ? "⚠️ " : ""
+        switch style {
+        case "cost" where costToday > 0:
+            Text("\(warning)\(dot)$\(costToday, specifier: "%.0f")")
+        case "limit":
+            if let hottestLimit {
+                Text("\(warning)\(dot)\(Int(hottestLimit))%")
+            } else {
+                statusLabel
+            }
+        default:
+            statusLabel
+        }
+    }
+
+    /// The worst state's dot, kept in every style so "needs you" is never
+    /// hidden by a display preference.
+    private var dot: String {
+        guard summary.activeCount > 0, let state = summary.worstState else { return "" }
+        return "\(state.dotEmoji) "
+    }
+
+    @ViewBuilder private var statusLabel: some View {
         if summary.activeCount == 0 {
             if limitDanger {
                 Text("⚠️")

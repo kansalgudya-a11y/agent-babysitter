@@ -6,6 +6,7 @@ struct MenuContent: View {
     /// Snapshot harness only — forces the expanded limits list.
     var forceShowAllLimits = false
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @State private var showLegend = false
     @State private var showCostInfo = false
     @AppStorage("showAllLimits") private var storedShowAllLimits = false
@@ -233,14 +234,17 @@ struct MenuContent: View {
                             .frame(width: 44, alignment: .trailing)
                             .help("The 5-hour window rolled over; fresh numbers arrive with the next agent activity.")
                     } else {
-                        ProgressView(value: min(limit.usedPercent ?? 0, 100) / 100)
-                            .tint((limit.usedPercent ?? 0) >= 90 ? .red
-                                  : (limit.usedPercent ?? 0) >= 70 ? .orange : .green)
-                        Text("\(Int(limit.usedPercent ?? 0))%")
+                        // Readings age between turns; show the pace-corrected
+                        // estimate ("≈9%") once one applies.
+                        let estimate = UsageForecast.estimatedCurrentPercent(limit)
+                        let shown = estimate ?? limit.usedPercent ?? 0
+                        ProgressView(value: min(shown, 100) / 100)
+                            .tint(shown >= 90 ? .red : shown >= 70 ? .orange : .green)
+                        Text("\(estimate != nil ? "≈" : "")\(Int(shown))%")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)
-                            .help(limitHelp(limit))
+                            .help(limitHelp(limit, estimate: estimate))
                     }
                 } else {
                     Text(entry.running ? "not shared by this app" : "no recent reading")
@@ -258,6 +262,14 @@ struct MenuContent: View {
                let caption = limitCaption(limit) {
                 caption
                     .font(.caption2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if let limit = entry.limit, let resets = limit.resetsAt,
+               let exhaustion = UsageForecast.projectedExhaustion(limit) {
+                let early = max(Int(resets.timeIntervalSince(exhaustion) / 60), 1)
+                Text("on pace to run out ~\(early)m before reset")
+                    .font(.caption2)
+                    .foregroundStyle(early >= 60 ? .red : .orange)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
@@ -291,8 +303,11 @@ struct MenuContent: View {
                              : "resets in \(max(minutes, 1))m"
     }
 
-    private func limitHelp(_ limit: UsageLimitSnapshot) -> String {
+    private func limitHelp(_ limit: UsageLimitSnapshot, estimate: Double? = nil) -> String {
         var parts: [String] = []
+        if let estimate, let raw = limit.usedPercent {
+            parts.append("≈\(Int(estimate))% estimated from pace — last real reading \(Int(raw))%")
+        }
         if let plan = limit.plan {
             // Capitalize single lowercase words ("plus" -> "Plus") but leave
             // already-styled names ("Google AI Pro") untouched.
@@ -348,6 +363,13 @@ struct MenuContent: View {
             }
             }
             Spacer()
+            Button {
+                openWindow(id: "stats")
+            } label: {
+                Image(systemName: "chart.bar")
+            }
+            .buttonStyle(.borderless)
+            .help("This week's stats")
             Button {
                 model.notificationsMuted.toggle()
             } label: {

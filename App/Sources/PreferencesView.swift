@@ -39,6 +39,15 @@ struct PreferencesView: View {
     @ViewBuilder private var generalTab: some View {
             Section("General") {
                 Toggle("Start Agent Babysitter when I log in", isOn: $model.launchAtLogin)
+                Toggle(isOn: $model.hotKeyEnabled) {
+                    Text("Jump to the neediest session with ⌥⌘B")
+                    Text("From anywhere: focuses the session that's waiting for you (or stuck, or working).")
+                }
+                Picker("Show in the menu bar", selection: $model.menuBarStyle) {
+                    Text("Status + count").tag("status")
+                    Text("Today's cost").tag("cost")
+                    Text("Hottest 5h limit %").tag("limit")
+                }
                 Button("Show the welcome tips again") { model.resetWelcome() }
                     .disabled(!model.welcomeDismissed)
             }

@@ -20,6 +20,10 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var transcriptURL: URL?
     /// State derives from file activity (no parsed turns) — see AgentAdapter.
     public var isActivityBased: Bool
+    /// The latest hook signal's text, when Precision mode captured one:
+    /// the pending question for waiting rows, the reply's first line for
+    /// done rows. Nil without hooks.
+    public var hookDetail: HookSignal?
 
     /// Session hosted by a desktop app rather than a terminal.
     public var isDesktopApp: Bool {
@@ -34,7 +38,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
                 pid: Int32?, cwd: String?, cost: SessionCost = SessionCost(),
                 entrypoint: String? = nil,
                 agentID: String = "claude-code", agentName: String = "Claude Code",
-                transcriptURL: URL? = nil, isActivityBased: Bool = false) {
+                transcriptURL: URL? = nil, isActivityBased: Bool = false,
+                hookDetail: HookSignal? = nil) {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -49,6 +54,7 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.agentName = agentName
         self.transcriptURL = transcriptURL
         self.isActivityBased = isActivityBased
+        self.hookDetail = hookDetail
     }
 }
 
@@ -212,7 +218,8 @@ public actor SessionStore {
                 agentID: tracked.adapter.id,
                 agentName: tracked.adapter.displayName,
                 transcriptURL: tracked.reader.url,
-                isActivityBased: tracked.adapter.isActivityBased))
+                isActivityBased: tracked.adapter.isActivityBased,
+                hookDetail: tracked.latestHookSignal))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]
@@ -243,6 +250,18 @@ public actor SessionStore {
             total.unknownModels.formUnion(daily.unknownModels)
         }
         return total
+    }
+
+    /// Today's dollars per agent — the stats view's raw material.
+    public func todayCostByAgent(at now: Date = Date(),
+                                 calendar: Calendar = .current) -> [String: Double] {
+        let midnight = calendar.startOfDay(for: now)
+        var totals: [String: Double] = [:]
+        for (_, tracked) in sessions {
+            guard let daily = tracked.reader.dailyCosts[midnight] else { continue }
+            totals[tracked.adapter.id, default: 0] += daily.dollars
+        }
+        return totals
     }
 
     /// Latest rate-limit reading per agent, newest capture wins. Codex writes

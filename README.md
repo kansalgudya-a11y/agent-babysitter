@@ -49,9 +49,18 @@ disabling removes only our entries.
 - **Antigravity is activity-based** (no public conversation schema): states
   are Working/Done/Ended only, cost shows "—", and turn notifications are
   suppressed (a >60s silent think would otherwise flap).
-- **Limit alerts** — one notification per window when any agent crosses your
-  chosen threshold (default 80%), so a long task can't silently burn the
-  whole 5-hour window.
+- **Limit alerts + forecasting** — one notification per window when any
+  agent crosses your threshold (default 80%). Readings age between turns, so
+  stale numbers are pace-corrected ("≈9%" instead of an hour-old 7%), and
+  when the current pace will exhaust the window before it resets, the row
+  says so: "on pace to run out ~40m before reset."
+- **Notifications you can act on** — with Precision mode, banners show the
+  actual pending question ("Claude needs your permission to use Bash") and
+  what a finished turn said, with a "Remind me in 10 min" snooze action.
+- **⌥⌘B from anywhere** jumps to the session that most needs you. The menu
+  bar icon can show status + count, today's cost, or the hottest limit %.
+- **This-week stats** — how long your agents worked while you did other
+  things, sessions watched, and cost per agent. All computed locally.
 - **5-hour limits, per agent** — with reset countdowns and the weekly window
   under each bar. The
   section shows open apps by default; "Show all" expands to every installed

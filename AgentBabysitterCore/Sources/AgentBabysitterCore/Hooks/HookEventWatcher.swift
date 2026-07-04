@@ -75,7 +75,9 @@ public final class HookEventWatcher: @unchecked Sendable {
             lineBuffer = Data(lineBuffer[lineBuffer.index(after: newline)...])
             guard let event = HookEventParser.parse(line: line) else { continue }
             if let signal = event.signal {
-                onSignal(signal.sessionID, HookSignal(kind: signal.kind, timestamp: Date()))
+                onSignal(signal.sessionID,
+                         HookSignal(kind: signal.kind, timestamp: Date(),
+                                    detail: signal.detail))
             }
             if let usage = event.usage {
                 onUsage?(usage)

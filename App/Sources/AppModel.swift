@@ -21,6 +21,10 @@ final class AppModel: ObservableObject {
     /// Observed daily cost totals, oldest first, at most 7 days. Accumulated
     /// locally — the store only retains 24h of sessions.
     @Published private(set) var costHistory: [(day: Date, dollars: Double)] = []
+    /// Week stats, persisted per local day: per-agent dollars, distinct
+    /// sessions seen, and minutes with at least one agent working.
+    @Published private(set) var weekStats = WeekStats()
+    private var lastActiveTick = Date()
     @Published var liveUsageEnabled: Bool {
         didSet {
             UserDefaults.standard.set(liveUsageEnabled, forKey: "liveUsageEnabled")
@@ -67,6 +71,18 @@ final class AppModel: ObservableObject {
             applyClaudeUsageMeter()
         }
     }
+    @Published var hotKeyEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(hotKeyEnabled, forKey: "hotKeyEnabled")
+            applyHotKey()
+        }
+    }
+    /// What the menu bar icon shows: "status", "cost", or "limit".
+    @Published var menuBarStyle: String {
+        didSet { UserDefaults.standard.set(menuBarStyle, forKey: "menuBarStyle") }
+    }
+    /// Hottest pace-corrected 5h usage across agents, for the "limit" style.
+    @Published private(set) var hottestLimitPercent: Double?
     @Published var launchAtLogin: Bool {
         didSet {
             guard oldValue != launchAtLogin else { return }
@@ -90,6 +106,7 @@ final class AppModel: ObservableObject {
     private var notificationPlanner = NotificationPlanner()
     private let notificationManager = NotificationManager()
     private let liveUsageService = LiveUsageService()
+    private let hotKeyManager = HotKeyManager()
     private var liveUsage: [String: UsageLimitSnapshot] = [:]
     private var liveUsageTimer: Timer?
     /// Zero-network Claude usage captured from status-line/hook events.
@@ -122,7 +139,9 @@ final class AppModel: ObservableObject {
                                      "notifyDone": true,
                                      "notifyStalled": true,
                                      "notifyLimit": true,
-                                     "limitAlertThreshold": 80.0])
+                                     "limitAlertThreshold": 80.0,
+                                     "hotKeyEnabled": true,
+                                     "menuBarStyle": "status"])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
         projectsRoot = root
@@ -140,6 +159,8 @@ final class AppModel: ObservableObject {
         notifyStalled = defaults.bool(forKey: "notifyStalled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
+        hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
+        menuBarStyle = defaults.string(forKey: "menuBarStyle") ?? "status"
         precisionModeEnabled = precision
         claudeUsageMeterEnabled = defaults.bool(forKey: "claudeUsageMeterEnabled")
         liveUsageEnabled = defaults.bool(forKey: "liveUsageEnabled")
@@ -152,6 +173,8 @@ final class AppModel: ObservableObject {
         notificationManager.rowProvider = { [weak self] sessionID in
             self?.rows.first { $0.id == sessionID }
         }
+        hotKeyManager.target = { [weak self] in self?.neediestRow() }
+        applyHotKey()
         notificationManager.primeAuthorization()
         start()
         if precision { applyPrecisionMode() }
@@ -374,6 +397,7 @@ final class AppModel: ObservableObject {
             forKey: "debugAgents")
         deliverLimitAlerts(usageLimits)
         recordCostHistory(todayCost.dollars)
+        await recordWeekStats(rows: rows)
         adaptRefreshCadence()
         self.summary = summary
         self.processDetectionDegraded = degraded
@@ -394,6 +418,53 @@ final class AppModel: ObservableObject {
                                     stallThresholdMinutes: Int(stallThresholdMinutes))
     }
 
+    /// Per-day per-agent dollars, session ids, and active minutes — the
+    /// stats window's data. All local-day keyed, pruned to 7 days.
+    private func recordWeekStats(rows: [SessionRow]) async {
+        let defaults = UserDefaults.standard
+        let today = DailyCostHistory.key(for: Date())
+
+        var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
+        let todayAgents = await store.todayCostByAgent()
+        var mergedToday = byAgent[today] ?? [:]
+        for (agent, dollars) in todayAgents {
+            mergedToday[agent] = max(mergedToday[agent] ?? 0, dollars)
+        }
+        byAgent[today] = mergedToday
+
+        var sessionsSeen = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] ?? [:]
+        var todayIDs = Set(sessionsSeen[today] ?? [])
+        todayIDs.formUnion(rows.map(\.id))
+        sessionsSeen[today] = Array(todayIDs)
+
+        var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
+        let tick = Date()
+        if rows.contains(where: { $0.state == .working }) {
+            // Cap a tick's credit so a sleep/wake gap doesn't award hours.
+            let delta = min(tick.timeIntervalSince(lastActiveTick), 60) / 60
+            activeMinutes[today, default: 0] += delta
+        }
+        lastActiveTick = tick
+
+        // Prune everything to the trailing week.
+        let liveKeys = Set((0..<7).map {
+            DailyCostHistory.key(for: Date().addingTimeInterval(Double(-$0) * 86_400))
+        })
+        byAgent = byAgent.filter { liveKeys.contains($0.key) }
+        sessionsSeen = sessionsSeen.filter { liveKeys.contains($0.key) }
+        activeMinutes = activeMinutes.filter { liveKeys.contains($0.key) }
+        defaults.set(byAgent, forKey: "costByAgent")
+        defaults.set(sessionsSeen, forKey: "sessionsSeen")
+        defaults.set(activeMinutes, forKey: "activeMinutes")
+
+        weekStats = WeekStats(
+            costByAgent: byAgent.values.reduce(into: [:]) { totals, day in
+                for (agent, dollars) in day { totals[agent, default: 0] += dollars }
+            },
+            sessionCount: sessionsSeen.values.reduce(0) { $0 + $1.count },
+            activeMinutes: activeMinutes.values.reduce(0, +))
+    }
+
     /// Fold today's running total into the persisted 7-day history. Max
     /// guards against dips when old sessions prune out mid-day.
     private func recordCostHistory(_ todayDollars: Double) {
@@ -406,12 +477,29 @@ final class AppModel: ObservableObject {
     /// Alert once per window (5h and weekly independently) when an agent
     /// crosses the threshold; the decision logic lives in Core.
     private func deliverLimitAlerts(_ limits: [String: UsageLimitSnapshot]) {
-        limitDanger = limits.values.contains {
+        // Pace-corrected estimates everywhere — a stale 78% that's really
+        // 84% should tint the icon and fire the 80% warning.
+        let effective = limits.mapValues { snapshot in
+            guard let estimate = UsageForecast.estimatedCurrentPercent(snapshot) else {
+                return snapshot
+            }
+            return UsageLimitSnapshot(usedPercent: estimate,
+                                      windowMinutes: snapshot.windowMinutes,
+                                      resetsAt: snapshot.resetsAt,
+                                      capturedAt: snapshot.capturedAt,
+                                      plan: snapshot.plan, isLive: snapshot.isLive,
+                                      weeklyUsedPercent: snapshot.weeklyUsedPercent,
+                                      weeklyResetsAt: snapshot.weeklyResetsAt)
+        }
+        limitDanger = effective.values.contains {
             ($0.usedPercent ?? 0) >= 90 &&
             ($0.resetsAt.map { $0 > Date() } ?? true)
         }
+        hottestLimitPercent = effective.values
+            .filter { $0.resetsAt.map { $0 > Date() } ?? true }
+            .compactMap(\.usedPercent).max()
         guard notifyLimit, !notificationsMuted else { return }
-        let outcome = UsageAlertPlanner.plan(limits: limits,
+        let outcome = UsageAlertPlanner.plan(limits: effective,
                                              threshold: limitAlertThreshold,
                                              alertedFiveHour: alertedFiveHour,
                                              alertedWeekly: alertedWeekly)
@@ -521,6 +609,17 @@ final class AppModel: ObservableObject {
         })
         watcher.start()
         hookWatcher = watcher
+    }
+
+    private func applyHotKey() {
+        if hotKeyEnabled { hotKeyManager.register() } else { hotKeyManager.unregister() }
+    }
+
+    /// The row the hotkey should jump to: same priority as the menu list.
+    func neediestRow() -> SessionRow? {
+        let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1,
+                                             .working: 2, .done: 3, .ended: 4]
+        return rows.min { (priority[$0.state] ?? 9) < (priority[$1.state] ?? 9) }
     }
 
     private func applyLaunchAtLogin() {

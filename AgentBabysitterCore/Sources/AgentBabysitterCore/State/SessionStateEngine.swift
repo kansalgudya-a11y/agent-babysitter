@@ -24,10 +24,14 @@ public struct HookSignal: Equatable, Sendable {
     }
     public let kind: Kind
     public let timestamp: Date
+    /// What the agent said: the permission/question text for
+    /// waitingForInput, the reply's first line for turnCompleted.
+    public let detail: String?
 
-    public init(kind: Kind, timestamp: Date) {
+    public init(kind: Kind, timestamp: Date, detail: String? = nil) {
         self.kind = kind
         self.timestamp = timestamp
+        self.detail = detail
     }
 }
 

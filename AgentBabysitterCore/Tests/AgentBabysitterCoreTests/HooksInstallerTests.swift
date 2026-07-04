@@ -160,6 +160,29 @@ final class HookEventParserTests: XCTestCase {
         XCTAssertEqual(event?.usage?.weeklyResetsAt, Date(timeIntervalSince1970: 1_783_573_200))
     }
 
+    func testNotificationCarriesTheQuestion() {
+        let line = """
+        {"session_id":"abc","hook_event_name":"Notification",\
+        "message":"Claude needs your permission to use Bash"}
+        """
+        let event = HookEventParser.parse(line: Data(line.utf8))
+        XCTAssertEqual(event?.signal?.detail, "Claude needs your permission to use Bash")
+    }
+
+    func testStopCarriesFirstLineOfReplyTrimmedAndCapped() {
+        let long = String(repeating: "x", count: 200)
+        let line = """
+        {"session_id":"abc","hook_event_name":"Stop",\
+        "last_assistant_message":"  All 191 tests pass.\\nDetails follow…"}
+        """
+        let event = HookEventParser.parse(line: Data(line.utf8))
+        XCTAssertEqual(event?.signal?.detail, "All 191 tests pass.")
+
+        let capped = HookEventParser.parse(line: Data(
+            "{\"session_id\":\"x\",\"hook_event_name\":\"Stop\",\"last_assistant_message\":\"\(long)\"}".utf8))
+        XCTAssertEqual(capped?.signal?.detail?.count, 118)  // 117 + ellipsis
+    }
+
     func testMissingSevenDayLeavesWeeklyNil() {
         let line = #"{"rate_limits":{"five_hour":{"used_percentage":10}}}"#
         let event = HookEventParser.parse(line: Data(line.utf8))

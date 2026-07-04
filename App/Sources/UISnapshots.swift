@@ -71,10 +71,12 @@ enum UISnapshots {
         }
 
         func limit(_ used: Double?, plan: String?, resetsInMinutes: Double = 135,
-                   weekly: Double? = nil, live: Bool = false) -> UsageLimitSnapshot {
+                   weekly: Double? = nil, live: Bool = false,
+                   capturedMinutesAgo: Double = 2) -> UsageLimitSnapshot {
             UsageLimitSnapshot(usedPercent: used, windowMinutes: 300,
                                resetsAt: now.addingTimeInterval(resetsInMinutes * 60),
-                               capturedAt: now.addingTimeInterval(-120), plan: plan,
+                               capturedAt: now.addingTimeInterval(-capturedMinutesAgo * 60),
+                               plan: plan,
                                isLive: live, weeklyUsedPercent: weekly,
                                weeklyResetsAt: now.addingTimeInterval(3.4 * 86_400))
         }
@@ -122,7 +124,8 @@ enum UISnapshots {
                 summary: MenuBarSummary(worstState: .stalled, activeCount: 5),
                 usageLimits: ["claude-code": limit(94, plan: "pro", resetsInMinutes: 22,
                                                    weekly: 91, live: true),
-                              "codex": limit(76, plan: "plus", weekly: 40),
+                              "codex": limit(76, plan: "plus", weekly: 40,
+                                             capturedMinutesAgo: 55),
                               "antigravity": limit(nil, plan: "Google AI Pro"),
                               "antigravity-ide": limit(5, plan: "Google AI Pro"),
                               "antigravity-cli": limit(5, plan: "Google AI Pro")],

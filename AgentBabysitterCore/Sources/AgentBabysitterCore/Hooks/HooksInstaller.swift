@@ -164,7 +164,7 @@ public enum HooksInstaller {
 public enum HookEventParser {
 
     public struct Event {
-        public let signal: (sessionID: String, kind: HookSignal.Kind)?
+        public let signal: (sessionID: String, kind: HookSignal.Kind, detail: String?)?
         public let usage: UsageLimitSnapshot?
     }
 
@@ -173,11 +173,13 @@ public enum HookEventParser {
             return nil
         }
 
-        var signal: (String, HookSignal.Kind)?
+        var signal: (String, HookSignal.Kind, String?)?
         if let sessionID = object["session_id"] as? String {
             switch object["hook_event_name"] as? String {
-            case "Notification": signal = (sessionID, .waitingForInput)
-            case "Stop": signal = (sessionID, .turnCompleted)
+            case "Notification":
+                signal = (sessionID, .waitingForInput, detail(object["message"]))
+            case "Stop":
+                signal = (sessionID, .turnCompleted, detail(object["last_assistant_message"]))
             default: break
             }
         }
@@ -204,6 +206,16 @@ public enum HookEventParser {
                                   weeklyUsedPercent: sevenDay.flatMap { doubleValue($0["used_percentage"]) }
                                       .map { min(max($0, 0), 100) },
                                   weeklyResetsAt: sevenDay.flatMap { date(from: $0["resets_at"]) })
+    }
+
+    /// First line, trimmed, capped — notification banners are one-liners.
+    private static func detail(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let firstLine = text.split(separator: "\n", omittingEmptySubsequences: true)
+            .first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        guard !firstLine.isEmpty else { return nil }
+        return firstLine.count > 120 ? String(firstLine.prefix(117)) + "…" : firstLine
     }
 
     private static func doubleValue(_ value: Any?) -> Double? {
