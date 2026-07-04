@@ -10,10 +10,11 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var isUnreadable: Bool
     public var pid: Int32?
     public var cwd: String?
+    public var cost: SessionCost
 
     public init(id: String, projectName: String, state: SessionState,
                 turnStartedAt: Date?, lastGrowthAt: Date?, isUnreadable: Bool,
-                pid: Int32?, cwd: String?) {
+                pid: Int32?, cwd: String?, cost: SessionCost = SessionCost()) {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -22,6 +23,7 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.isUnreadable = isUnreadable
         self.pid = pid
         self.cwd = cwd
+        self.cost = cost
     }
 }
 
@@ -145,7 +147,8 @@ public actor SessionStore {
                 lastGrowthAt: tracked.tailer.lastGrowthAt,
                 isUnreadable: tracked.tailer.isUnreadable,
                 pid: tracked.pid,
-                cwd: cwd))
+                cwd: cwd,
+                cost: tracked.tailer.costAccumulator.cost))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]
@@ -159,6 +162,23 @@ public actor SessionStore {
         let states = rows(at: now).map(\.state)
         return MenuBarSummary(worstState: SessionState.worst(of: states),
                               activeCount: states.filter { $0 != .ended }.count)
+    }
+
+    /// Dollars across every transcript modified since local midnight —
+    /// including sessions hidden from the row list (no live process).
+    /// Recomputed from transcripts; there is no cost database.
+    public func todayCost(at now: Date = Date(),
+                          calendar: Calendar = .current) -> SessionCost {
+        let midnight = calendar.startOfDay(for: now)
+        var total = SessionCost()
+        for (_, tracked) in sessions {
+            guard let growth = tracked.tailer.lastGrowthAt, growth >= midnight else { continue }
+            let cost = tracked.tailer.costAccumulator.cost
+            total.dollars += cost.dollars
+            total.totalTokens += cost.totalTokens
+            total.unknownModels.formUnion(cost.unknownModels)
+        }
+        return total
     }
 
     // MARK: - Internals

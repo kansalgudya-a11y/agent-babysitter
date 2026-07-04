@@ -9,13 +9,32 @@ public struct TokenUsage: Equatable, Sendable {
     public let outputTokens: Int
     public let cacheCreationInputTokens: Int
     public let cacheReadInputTokens: Int
+    /// TTL breakdown of cache writes — 5m and 1h are billed at different
+    /// rates (1.25x vs 2x input). Claude Code writes 1h entries, so lumping
+    /// the aggregate under one rate would misprice most real sessions.
+    public let cacheCreation5mTokens: Int
+    public let cacheCreation1hTokens: Int
 
     public init(inputTokens: Int, outputTokens: Int,
-                cacheCreationInputTokens: Int, cacheReadInputTokens: Int) {
+                cacheCreationInputTokens: Int, cacheReadInputTokens: Int,
+                cacheCreation5mTokens: Int? = nil, cacheCreation1hTokens: Int? = nil) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheCreationInputTokens = cacheCreationInputTokens
         self.cacheReadInputTokens = cacheReadInputTokens
+        if cacheCreation5mTokens == nil && cacheCreation1hTokens == nil {
+            // No breakdown in the schema: treat the aggregate as 5m (the
+            // API's default TTL).
+            self.cacheCreation5mTokens = cacheCreationInputTokens
+            self.cacheCreation1hTokens = 0
+        } else {
+            self.cacheCreation5mTokens = cacheCreation5mTokens ?? 0
+            self.cacheCreation1hTokens = cacheCreation1hTokens ?? 0
+        }
+    }
+
+    public var totalTokens: Int {
+        inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens
     }
 }
 

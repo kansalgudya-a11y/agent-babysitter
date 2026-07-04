@@ -36,7 +36,7 @@ struct MenuContent: View {
 
             Divider()
             HStack {
-                Text("Today: —")   // session cost lands in milestone 6
+                Text("Today: \(model.todayCost.display)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -82,7 +82,7 @@ struct SessionRowView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Text("—")  // per-session cost lands in milestone 6
+            Text(row.cost.display)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -98,6 +98,19 @@ struct SessionRowView: View {
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m \(seconds % 60)s" }
         return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
+    }
+}
+
+extension SessionCost {
+    /// "$1.22", or token counts when pricing is unknown — never guessed dollars.
+    var display: String {
+        if hasUnknownPricing {
+            let tokens = totalTokens >= 1000 ? "\(totalTokens / 1000)k" : "\(totalTokens)"
+            return dollars > 0
+                ? String(format: "$%.2f + %@ tok (pricing unknown)", dollars, tokens)
+                : "\(tokens) tok · pricing unknown"
+        }
+        return String(format: "$%.2f", dollars)
     }
 }
 

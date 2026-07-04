@@ -38,8 +38,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case .waitingForInput:
             return "Session \(row.projectName) needs your input."
         case .turnCompleted:
-            // Cost lands in the copy once the cost engine ships (milestone 6).
-            return "Session \(row.projectName) finished its turn."
+            if row.cost.hasUnknownPricing || row.cost.dollars == 0 {
+                return "Session \(row.projectName) finished its turn."
+            }
+            return String(format: "Session %@ finished its turn (cost $%.2f).",
+                          row.projectName, row.cost.dollars)
         case .stalled:
             return "Session \(row.projectName) has produced nothing for \(stallMinutes) min."
         }

@@ -8,7 +8,10 @@ let package = Package(
         .library(name: "AgentBabysitterCore", targets: ["AgentBabysitterCore"])
     ],
     targets: [
-        .target(name: "AgentBabysitterCore"),
+        .target(
+            name: "AgentBabysitterCore",
+            resources: [.copy("Resources/model-pricing.json")]
+        ),
         .testTarget(
             name: "AgentBabysitterCoreTests",
             dependencies: ["AgentBabysitterCore"],

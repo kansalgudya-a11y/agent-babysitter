@@ -11,6 +11,7 @@ public final class TranscriptFileTailer {
     public let sessionID: String
 
     public private(set) var reducer = TranscriptReducer()
+    public private(set) var costAccumulator = CostAccumulator()
     public private(set) var lastGrowthAt: Date?
     /// cwd from the most recent entry that carried one.
     public private(set) var lastKnownCWD: String?
@@ -42,6 +43,7 @@ public final class TranscriptFileTailer {
             offset = 0
             parser = TranscriptTailParser()
             reducer = TranscriptReducer()
+            costAccumulator = CostAccumulator()
         }
         guard size > offset else { return [] }
 
@@ -54,6 +56,7 @@ public final class TranscriptFileTailer {
         let entries = parser.consume(data)
         for entry in entries {
             reducer.consume(entry)
+            costAccumulator.consume(entry)
             if let cwd = entry.cwd { lastKnownCWD = cwd }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()

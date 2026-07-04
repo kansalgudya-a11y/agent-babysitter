@@ -174,7 +174,9 @@ final class TranscriptLineParserTests: XCTestCase {
         XCTAssertTrue(first.hasThinking)
         XCTAssertEqual(first.usage, TokenUsage(inputTokens: 26870, outputTokens: 156,
                                                cacheCreationInputTokens: 4207,
-                                               cacheReadInputTokens: 15148))
+                                               cacheReadInputTokens: 15148,
+                                               cacheCreation5mTokens: 0,
+                                               cacheCreation1hTokens: 4207))
 
         // Second block-line of the SAME message: same id, same usage (dedupe hazard)
         guard case .assistant(let second) = entries[10].kind else { return XCTFail("line 11 should be assistant") }

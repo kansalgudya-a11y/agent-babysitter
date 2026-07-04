@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var summary = MenuBarSummary(worstState: nil, activeCount: 0)
     @Published private(set) var processDetectionDegraded = false
     @Published private(set) var claudeDirectoryMissing = false
+    @Published private(set) var todayCost = SessionCost()
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
     }
@@ -94,9 +95,11 @@ final class AppModel: ObservableObject {
         let rows = await store.rows()
         let summary = await store.menuBarSummary()
         let degraded = await store.isProcessDetectionDegraded
+        let todayCost = await store.todayCost()
         self.rows = rows
         self.summary = summary
         self.processDetectionDegraded = degraded
+        self.todayCost = todayCost
 
         let events = notificationPlanner.events(for: rows)
         notificationManager.deliver(events, rows: rows,

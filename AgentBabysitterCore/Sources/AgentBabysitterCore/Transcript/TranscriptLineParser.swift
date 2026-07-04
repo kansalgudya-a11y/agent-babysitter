@@ -104,11 +104,14 @@ public enum TranscriptLineParser {
         // input/output are the schema's baseline; cache fields default to 0
         guard let input = usage["input_tokens"] as? Int,
               let output = usage["output_tokens"] as? Int else { return nil }
+        let breakdown = usage["cache_creation"] as? [String: Any]
         return TokenUsage(
             inputTokens: input,
             outputTokens: output,
             cacheCreationInputTokens: usage["cache_creation_input_tokens"] as? Int ?? 0,
-            cacheReadInputTokens: usage["cache_read_input_tokens"] as? Int ?? 0
+            cacheReadInputTokens: usage["cache_read_input_tokens"] as? Int ?? 0,
+            cacheCreation5mTokens: breakdown.flatMap { $0["ephemeral_5m_input_tokens"] as? Int },
+            cacheCreation1hTokens: breakdown.flatMap { $0["ephemeral_1h_input_tokens"] as? Int }
         )
     }
 

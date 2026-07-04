@@ -148,6 +148,39 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), ["bbb", "aaa"], "working outranks done in the list")
     }
 
+    func testTodayCostSumsOnlyTranscriptsModifiedToday() async throws {
+        let usageLine = "{\"type\":\"assistant\",\"timestamp\":\"2026-07-04T10:00:30.000Z\",\"message\":{\"model\":\"claude-opus-4-8\",\"id\":\"msg_c1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":1000000,\"output_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
+        // Today: 1M input on opus-4-8 = $5. Yesterday's session must not count.
+        // Pin the old file's mtime to 23:00 local yesterday — always before
+        // midnight regardless of when the test runs.
+        let yesterdayEvening = Calendar.current.startOfDay(for: Date())
+            .addingTimeInterval(-3600)
+        try writeTranscript(project: "-Users-dev-appA", session: "today",
+                            cwd: "/Users/dev/appA", lines: [usageLine])
+        try writeTranscript(project: "-Users-dev-appB", session: "yesterday",
+                            cwd: "/Users/dev/appB", lines: [usageLine],
+                            age: Date().timeIntervalSince(yesterdayEvening))
+
+        let store = store()
+        await store.bootstrap()
+        let today = await store.todayCost()
+        XCTAssertEqual(today.dollars, 5.0, accuracy: 0.0001)
+    }
+
+    func testRowCarriesSessionCost() async throws {
+        let usageLine = "{\"type\":\"assistant\",\"timestamp\":\"2026-07-04T10:00:30.000Z\",\"message\":{\"model\":\"claude-opus-4-8\",\"id\":\"msg_c1\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":200000,\"output_tokens\":40000,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
+        try writeTranscript(project: "-Users-dev-appA", session: "aaa",
+                            cwd: "/Users/dev/appA",
+                            lines: [userLine("hi", cwd: "/Users/dev/appA"), usageLine])
+        let store = store()
+        await store.bootstrap()
+        await store.processesUpdated(.init(processes: [RunningProcess(pid: 1, cwd: "/Users/dev/appA")],
+                                           degraded: false))
+        let rows = await store.rows()
+        // 200k in ($1.00) + 40k out ($1.00) = $2.00
+        XCTAssertEqual(rows[0].cost.dollars, 2.0, accuracy: 0.0001)
+    }
+
     func testMenuBarSummaryAggregatesWorstState() async throws {
         try writeTranscript(project: "-Users-dev-appA", session: "aaa", cwd: "/Users/dev/appA",
                             lines: [userLine("hi", cwd: "/Users/dev/appA")])
