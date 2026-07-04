@@ -258,23 +258,39 @@ public actor SessionStore {
             latest[tracked.adapter.id] = limit
         }
         // Antigravity: fill the five-hour quota (and plan) from the IDE state
-        // for any surface with sessions listed — the same numbers the app's
-        // own Model Quota page shows, read from disk with zero network.
-        let antigravityIDsWithSessions = Set(sessions.values
-            .map(\.adapter.id).filter { $0.hasPrefix("antigravity") })
-        if !antigravityIDsWithSessions.isEmpty, let usage = antigravityUsage() {
-            for id in antigravityIDsWithSessions where latest[id] == nil {
-                latest[id] = usage
+        // for every installed surface — the same numbers the app's own Model
+        // Quota page shows, read from disk with zero network. The quota is
+        // account-wide, so it's valid whether or not a session is running.
+        if let usage = antigravityUsage() {
+            for adapter in configuration.adapters
+            where adapter.id.hasPrefix("antigravity") && latest[adapter.id] == nil {
+                latest[adapter.id] = usage
             }
         }
         return latest
     }
 
+    /// Agents whose app/CLI currently has a matching process — "open".
+    public func runningAgentIDs() -> Set<String> {
+        Set(latestProcessesByAdapter.filter { !$0.value.isEmpty }.keys)
+    }
+
+    private var antigravityUsageCache: (mtime: Date, usage: UsageLimitSnapshot?)?
+
+    /// The state file is a few MB of SQLite copied to a temp file to read;
+    /// cache by mtime so the 2s refresh tick doesn't reparse it.
     private func antigravityUsage() -> UsageLimitSnapshot? {
+        guard configuration.adapters.contains(where: { $0.id.hasPrefix("antigravity") }),
+              let mtime = (try? FileManager.default.attributesOfItem(
+                  atPath: AntigravityAdapter.defaultStateDBURL.path))?[.modificationDate] as? Date
+        else { return nil }
+        if let cache = antigravityUsageCache, cache.mtime == mtime { return cache.usage }
+        var usage: UsageLimitSnapshot?
         for case let adapter as AntigravityAdapter in configuration.adapters {
-            if let usage = adapter.usageFromDisk() { return usage }
+            if let found = adapter.usageFromDisk() { usage = found; break }
         }
-        return nil
+        antigravityUsageCache = (mtime, usage)
+        return usage
     }
 
     // MARK: - Internals

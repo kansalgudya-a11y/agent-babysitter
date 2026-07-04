@@ -14,6 +14,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var noAgentsDetected = false
     @Published private(set) var todayCost = SessionCost()
     @Published private(set) var usageLimits: [String: UsageLimitSnapshot] = [:]
+    /// Agents whose files exist on this Mac, in display order.
+    @Published private(set) var installedAgents: [(id: String, name: String)] = []
+    /// Agents with a live process right now — their app/CLI is open.
+    @Published private(set) var runningAgentIDs: Set<String> = []
     @Published var liveUsageEnabled: Bool {
         didSet {
             UserDefaults.standard.set(liveUsageEnabled, forKey: "liveUsageEnabled")
@@ -270,10 +274,17 @@ final class AppModel: ObservableObject {
         }
         self.rows = rows
         self.usageLimits = usageLimits
+        self.runningAgentIDs = await store.runningAgentIDs()
+        self.installedAgents = adapters
+            .filter { FileManager.default.fileExists(atPath: $0.transcriptRoot.path) }
+            .map { (id: $0.id, name: $0.displayName) }
         // Mirror for support/debugging: `defaults read app.agentbabysitter.AgentBabysitter debugUsageLimits`
         UserDefaults.standard.set(
             usageLimits.mapValues { "\($0.usedPercent.map { String(Int($0)) } ?? "-")% \($0.plan ?? "")" },
             forKey: "debugUsageLimits")
+        UserDefaults.standard.set(
+            "installed: \(installedAgents.map(\.id).sorted().joined(separator: " ")) | running: \(runningAgentIDs.sorted().joined(separator: " "))",
+            forKey: "debugAgents")
         self.summary = summary
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost

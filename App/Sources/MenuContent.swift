@@ -6,6 +6,7 @@ struct MenuContent: View {
     @Environment(\.openSettings) private var openSettings
     @State private var showLegend = false
     @State private var showCostInfo = false
+    @State private var showAllLimits = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -35,7 +36,7 @@ struct MenuContent: View {
             }
 
             Divider()
-            if !limitEntries.isEmpty {
+            if !model.installedAgents.isEmpty {
                 limitsSection
                 Divider()
             }
@@ -134,68 +135,126 @@ struct MenuContent: View {
         .frame(maxHeight: 380)
     }
 
-    /// One entry per agent that has sessions listed: its 5h reading when the
-    /// agent records one locally, an honest "no data" otherwise.
-    private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?)] {
-        groupedRows.map { group in
-            // Antigravity surfaces share one Gemini quota; none expose it.
-            (id: group.agentID, name: group.agentName, limit: model.usageLimits[group.agentID])
-        }
+    /// Open apps by default; expanding shows every installed agent. An agent
+    /// gets its 5h reading when one is known, an honest fallback otherwise.
+    private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?, running: Bool)] {
+        let order = ["claude-code": 0, "codex": 1,
+                     "antigravity": 2, "antigravity-ide": 3, "antigravity-cli": 4]
+        return model.installedAgents
+            .filter { showAllLimits || model.runningAgentIDs.contains($0.id) }
+            .sorted { (order[$0.id] ?? 99, $0.id) < (order[$1.id] ?? 99, $1.id) }
+            .map { (id: $0.id, name: $0.name,
+                    limit: model.usageLimits[$0.id],
+                    running: model.runningAgentIDs.contains($0.id)) }
+    }
+
+    /// Whether expanding would reveal anything beyond the open apps.
+    private var hasClosedAgents: Bool {
+        model.installedAgents.contains { !model.runningAgentIDs.contains($0.id) }
     }
 
     private var limitsSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("5-hour limits")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
-            ForEach(limitEntries, id: \.id) { entry in
-                HStack(spacing: 8) {
-                    Text(entry.name)
-                        .font(.caption)
-                        .frame(width: 92, alignment: .leading)
-                        .lineLimit(1)
-                    if let limit = entry.limit {
-                        if limit.usedPercent == nil, let plan = limit.plan {
-                            Text(plan)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("plan")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 44, alignment: .trailing)
-                                .help("Only the plan tier is available offline right now — the % appears once the agent syncs its quota to disk.")
-                        } else if let resets = limit.resetsAt, resets < Date() {
-                            ProgressView(value: 0)
-                                .tint(.green)
-                            Text("reset")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 44, alignment: .trailing)
-                                .help("The 5-hour window rolled over; fresh numbers arrive with the next agent activity.")
-                        } else {
-                            ProgressView(value: min(limit.usedPercent ?? 0, 100) / 100)
-                                .tint((limit.usedPercent ?? 0) >= 90 ? .red
-                                      : (limit.usedPercent ?? 0) >= 70 ? .orange : .green)
-                            Text("\(Int(limit.usedPercent ?? 0))%\(limit.isLive ? "" : "")")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 44, alignment: .trailing)
-                                .help(limitHelp(limit))
+            HStack {
+                Text("5-hour limits")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if hasClosedAgents {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { showAllLimits.toggle() }
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(showAllLimits ? "Open apps only" : "Show all")
+                            Image(systemName: showAllLimits ? "chevron.up" : "chevron.down")
                         }
-                    } else {
-                        Text("not shared by this app")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .help("This agent doesn't record its limit usage on your Mac, and Agent Babysitter never guesses or phones home.")
-                        Spacer()
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.borderless)
+                    .help(showAllLimits ? "Hide agents that aren't running"
+                                        : "Also show installed agents that aren't running right now")
                 }
+            }
+            if limitEntries.isEmpty {
+                Text("No agent apps are open right now.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            ForEach(limitEntries, id: \.id) { entry in
+                limitRow(entry)
+                    .opacity(entry.running ? 1 : 0.55)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func limitRow(_ entry: (id: String, name: String,
+                                    limit: UsageLimitSnapshot?, running: Bool)) -> some View {
+        VStack(spacing: 1) {
+            HStack(spacing: 8) {
+                Text(entry.name)
+                    .font(.caption)
+                    .frame(width: 92, alignment: .leading)
+                    .lineLimit(1)
+                if let limit = entry.limit {
+                    if limit.usedPercent == nil, let plan = limit.plan {
+                        Text(plan)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("plan")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 44, alignment: .trailing)
+                            .help("Only the plan tier is available offline right now — the % appears once the agent syncs its quota to disk.")
+                    } else if let resets = limit.resetsAt, resets < Date() {
+                        ProgressView(value: 0)
+                            .tint(.green)
+                        Text("reset")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                            .help("The 5-hour window rolled over; fresh numbers arrive with the next agent activity.")
+                    } else {
+                        ProgressView(value: min(limit.usedPercent ?? 0, 100) / 100)
+                            .tint((limit.usedPercent ?? 0) >= 90 ? .red
+                                  : (limit.usedPercent ?? 0) >= 70 ? .orange : .green)
+                        Text("\(Int(limit.usedPercent ?? 0))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                            .help(limitHelp(limit))
+                    }
+                } else {
+                    Text(entry.running ? "not shared by this app" : "no recent reading")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .help(entry.running
+                              ? "This agent doesn't record its limit usage on your Mac, and Agent Babysitter never guesses or phones home."
+                              : "Open this app and the reading appears once it records usage.")
+                    Spacer()
+                }
+            }
+            if let limit = entry.limit, limit.usedPercent != nil,
+               let phrase = resetPhrase(limit.resetsAt) {
+                Text(phrase)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    /// "resets in 2h 22m" when the reset time is known and ahead of us.
+    private func resetPhrase(_ resets: Date?) -> String? {
+        guard let resets, resets > Date() else { return nil }
+        let minutes = Int(resets.timeIntervalSinceNow / 60)
+        return minutes >= 60 ? "resets in \(minutes / 60)h \(minutes % 60)m"
+                             : "resets in \(max(minutes, 1))m"
     }
 
     private func limitHelp(_ limit: UsageLimitSnapshot) -> String {

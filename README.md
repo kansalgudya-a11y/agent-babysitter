@@ -49,7 +49,11 @@ disabling removes only our entries.
 - **Antigravity is activity-based** (no public conversation schema): states
   are Working/Done/Ended only, cost shows "—", and turn notifications are
   suppressed (a >60s silent think would otherwise flap).
-- **5-hour limits, per agent**: Codex shows a real % from disk (CLI + desktop,
+- **5-hour limits, per agent** — with reset countdowns under each bar. The
+  section shows open apps by default; "Show all" expands to every installed
+  agent (closed ones dimmed, with their last known reading). If you only have
+  one agent installed, you just see that one.
+  Codex shows a real % from disk (CLI + desktop,
   zero network). Antigravity shows the real five-hour
   quota % (and plan tier) that its own Model Quota page displays, read from
   the IDE's synced account state — zero network. Claude Code

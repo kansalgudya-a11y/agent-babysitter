@@ -127,6 +127,10 @@ public struct AntigravityAdapter: AgentAdapter {
 
     public var isActivityBased: Bool { true }
 
+    /// Shared account-state file all surfaces sync to.
+    public static let defaultStateDBURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb")
+
     /// Account status from the Antigravity IDE's stored state: plan tier
     /// ("Google AI Pro") plus the five-hour quota used % and reset time that
     /// the app's own Model Quota page displays. `capturedAt` is the state
@@ -136,8 +140,10 @@ public struct AntigravityAdapter: AgentAdapter {
         appSupport: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
     ) -> UsageLimitSnapshot? {
-        let db = appSupport
-            .appendingPathComponent("Antigravity IDE/User/globalStorage/state.vscdb")
+        let db = appSupport.path == FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support").path
+            ? Self.defaultStateDBURL
+            : appSupport.appendingPathComponent("Antigravity IDE/User/globalStorage/state.vscdb")
         guard let data = try? Data(contentsOf: db),
               let status = AntigravityStateReader.accountStatus(inStateDB: data) else {
             return nil
