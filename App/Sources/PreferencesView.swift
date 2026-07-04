@@ -3,6 +3,7 @@ import AgentBabysitterCore
 
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateChecker()
     @State private var licenseKeyInput = ""
@@ -48,8 +49,10 @@ struct PreferencesView: View {
                     Text("Today's cost").tag("cost")
                     Text("Hottest 5h limit %").tag("limit")
                 }
-                Button("Show the welcome tips again") { model.resetWelcome() }
-                    .disabled(!model.welcomeDismissed)
+                Button("Show the feature tour") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "welcome")
+                }
             }
 
     }

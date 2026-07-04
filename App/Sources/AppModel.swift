@@ -92,6 +92,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var hooksError: String?
     @Published private(set) var welcomeDismissed: Bool =
         UserDefaults.standard.bool(forKey: "welcomeDismissed")
+    /// The guide version floor at launch: tips newer than this get NEW
+    /// badges, and a pill in the menu invites the tour after an update.
+    @Published private(set) var guideVersionFloor: String =
+        UserDefaults.standard.string(forKey: "lastSeenGuideVersion") ?? "0"
+    var newFeatureCount: Int { FeatureGuide.tipsNewer(than: guideVersionFloor).count }
+
+    func isNewTip(_ tip: FeatureGuide.Tip) -> Bool {
+        tip.version.compare(guideVersionFloor, options: .numeric) == .orderedDescending
+    }
+
+    /// Called when the tour closes: everything shipped so far is now seen.
+    func markGuideSeen() {
+        let current = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        UserDefaults.standard.set(current, forKey: "lastSeenGuideVersion")
+        guideVersionFloor = current
+    }
 
     private let projectsRoot: URL
     private let adapters: [any AgentAdapter] =
@@ -171,6 +188,10 @@ final class AppModel: ObservableObject {
             capturedUsage = saved.filter { Date().timeIntervalSince($0.value.capturedAt) < 300 * 60 }
         }
         guard !Self.isSnapshotMode else { return }
+        if !defaults.bool(forKey: "welcomeDismissed"),
+           defaults.string(forKey: "lastSeenGuideVersion") == nil {
+            markGuideSeen()
+        }
         notificationManager.rowProvider = { [weak self] sessionID in
             self?.rows.first { $0.id == sessionID }
         }

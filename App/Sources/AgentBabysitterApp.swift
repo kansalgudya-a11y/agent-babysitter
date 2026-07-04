@@ -25,6 +25,11 @@ struct AgentBabysitterApp: App {
             PreferencesView(model: model)
         }
 
+        Window("Welcome", id: "welcome") {
+            WelcomeView(model: model)
+        }
+        .windowResizability(.contentSize)
+
         Window("Agent Stats", id: "stats") {
             StatsView(model: model)
         }

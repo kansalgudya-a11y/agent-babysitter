@@ -204,6 +204,15 @@ enum UISnapshots {
         results.append(("stats-single-day-alltime",
                         AnyView(StatsView(model: singleDayModel, initialRange: .allTime))))
 
+        // Welcome tour as an updater would see it (floor 0.2.1 -> newer badged).
+        UserDefaults.standard.set("0.2.1", forKey: "lastSeenGuideVersion")
+        let welcomeModel = AppModel()
+        welcomeModel.applyFixture(
+            rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+            usageLimits: [:], installedAgents: [], runningAgentIDs: [],
+            todayCost: SessionCost(), costHistory: [])
+        results.append(("welcome-tour", AnyView(WelcomeView(model: welcomeModel))))
+
         // Settings (Form/TabView) is AppKit-backed and invisible to
         // ImageRenderer — verified by eye in the running app instead.
         results.append(("menubar-labels", AnyView(

@@ -17,6 +17,21 @@ struct MenuContent: View {
             header
             if showLegend { LegendView() }
 
+            if model.newFeatureCount > 0, model.welcomeDismissed {
+                Button {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "welcome")
+                } label: {
+                    Label("✨ \(model.newFeatureCount) new since your last look — see what's new",
+                          systemImage: "sparkles")
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(Color.accentColor.opacity(0.1))
+            }
             if model.noAgentsDetected {
                 OnboardingView(model: model)
             } else {
@@ -445,6 +460,7 @@ struct LegendView: View {
 /// One-time intro shown until dismissed.
 struct WelcomeCard: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -455,6 +471,11 @@ struct WelcomeCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
+                Button("See everything it can do") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "welcome")
+                }
+                .controlSize(.small)
                 Spacer()
                 Button("Got it") { model.dismissWelcome() }
                     .controlSize(.small)
