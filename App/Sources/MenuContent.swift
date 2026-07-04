@@ -91,17 +91,43 @@ struct MenuContent: View {
         .padding()
     }
 
+    /// Sessions grouped per agent app, in a fixed friendly order; rows keep
+    /// their needs-attention-first ordering within each group.
+    private var groupedRows: [(agentID: String, agentName: String, rows: [SessionRow])] {
+        let order = ["claude-code": 0, "codex": 1,
+                     "antigravity": 2, "antigravity-ide": 3, "antigravity-cli": 4]
+        return Dictionary(grouping: model.rows, by: \.agentID)
+            .sorted { (order[$0.key] ?? 99, $0.key) < (order[$1.key] ?? 99, $1.key) }
+            .map { (agentID: $0.key,
+                    agentName: $0.value.first?.agentName ?? $0.key,
+                    rows: $0.value) }
+    }
+
     private var sessionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(model.rows) { row in
-                    SessionRowView(row: row, onDismiss: { model.dismiss($0) })
-                        .onTapGesture { TerminalFocuser.focusSession(row) }
+                ForEach(groupedRows, id: \.agentID) { group in
+                    HStack(spacing: 6) {
+                        Text(group.agentName)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                        Text("\(group.rows.count)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        VStack { Divider() }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                    ForEach(group.rows) { row in
+                        SessionRowView(row: row, onDismiss: { model.dismiss($0) })
+                            .onTapGesture { TerminalFocuser.focusSession(row) }
+                    }
                 }
             }
             .padding(.vertical, 6)
         }
-        .frame(maxHeight: 360)
+        .frame(maxHeight: 380)
     }
 
     private var footer: some View {
@@ -218,9 +244,6 @@ struct SessionRowView: View {
                     .lineLimit(1)
                 HStack(spacing: 4) {
                     Text(row.state.label)
-                    if row.agentID != "claude-code" {
-                        Text("· \(row.agentName)")
-                    }
                     if row.isDesktopApp {
                         Text("· Desktop")
                     }
