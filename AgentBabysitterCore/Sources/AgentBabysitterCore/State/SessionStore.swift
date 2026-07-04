@@ -10,6 +10,19 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var isUnreadable: Bool
     public var pid: Int32?
     public var cwd: String?
+
+    public init(id: String, projectName: String, state: SessionState,
+                turnStartedAt: Date?, lastGrowthAt: Date?, isUnreadable: Bool,
+                pid: Int32?, cwd: String?) {
+        self.id = id
+        self.projectName = projectName
+        self.state = state
+        self.turnStartedAt = turnStartedAt
+        self.lastGrowthAt = lastGrowthAt
+        self.isUnreadable = isUnreadable
+        self.pid = pid
+        self.cwd = cwd
+    }
 }
 
 public struct MenuBarSummary: Equatable, Sendable {
@@ -17,6 +30,11 @@ public struct MenuBarSummary: Equatable, Sendable {
     public var worstState: SessionState?
     /// Sessions that are not Ended.
     public var activeCount: Int
+
+    public init(worstState: SessionState?, activeCount: Int) {
+        self.worstState = worstState
+        self.activeCount = activeCount
+    }
 }
 
 /// Fuses transcript tailers, the process watcher, and (later) hook signals
