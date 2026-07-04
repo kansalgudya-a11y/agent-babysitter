@@ -165,7 +165,7 @@ struct MenuContent: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                                 .frame(width: 44, alignment: .trailing)
-                                .help("Antigravity doesn't record a usage percentage on your Mac — only the plan tier is available offline.")
+                                .help("Only the plan tier is available offline right now — the % appears once the agent syncs its quota to disk.")
                         } else if let resets = limit.resetsAt, resets < Date() {
                             ProgressView(value: 0)
                                 .tint(.green)
@@ -200,7 +200,11 @@ struct MenuContent: View {
 
     private func limitHelp(_ limit: UsageLimitSnapshot) -> String {
         var parts: [String] = []
-        if let plan = limit.plan { parts.append("\(plan.capitalized) plan") }
+        if let plan = limit.plan {
+            // Capitalize single lowercase words ("plus" -> "Plus") but leave
+            // already-styled names ("Google AI Pro") untouched.
+            parts.append("\(plan == plan.lowercased() ? plan.capitalized : plan) plan")
+        }
         if let resets = limit.resetsAt, resets > Date() {
             let minutes = Int(resets.timeIntervalSinceNow / 60)
             parts.append(minutes >= 60 ? "resets in \(minutes / 60)h \(minutes % 60)m"

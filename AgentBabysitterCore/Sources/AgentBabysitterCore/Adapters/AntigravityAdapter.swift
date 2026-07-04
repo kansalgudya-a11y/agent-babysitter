@@ -127,18 +127,28 @@ public struct AntigravityAdapter: AgentAdapter {
 
     public var isActivityBased: Bool { true }
 
-    /// Plan tier from the Antigravity IDE's stored account state, when
-    /// present ("Google AI Pro"). No percentage is stored anywhere on disk;
-    /// this is the most the local files reveal. Returns nil when the IDE
-    /// isn't installed or the state can't be read.
-    public func planFromDisk(
+    /// Account status from the Antigravity IDE's stored state: plan tier
+    /// ("Google AI Pro") plus the five-hour quota used % and reset time that
+    /// the app's own Model Quota page displays. `capturedAt` is the state
+    /// file's mtime so staleness is honest. Returns nil when the IDE isn't
+    /// installed or the state can't be read.
+    public func usageFromDisk(
         appSupport: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
-    ) -> String? {
+    ) -> UsageLimitSnapshot? {
         let db = appSupport
             .appendingPathComponent("Antigravity IDE/User/globalStorage/state.vscdb")
-        guard let data = try? Data(contentsOf: db) else { return nil }
-        return AntigravityStateReader.planName(inStateDB: data)
+        guard let data = try? Data(contentsOf: db),
+              let status = AntigravityStateReader.accountStatus(inStateDB: data) else {
+            return nil
+        }
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: db.path))
+            .flatMap { $0[.modificationDate] as? Date } ?? Date()
+        return UsageLimitSnapshot(usedPercent: status.fiveHourUsedPercent,
+                                  windowMinutes: 300,
+                                  resetsAt: status.fiveHourResetsAt,
+                                  capturedAt: mtime,
+                                  plan: status.plan)
     }
 
     public func agentPIDs(psComm: String, psArgs: String) -> [Int32] {

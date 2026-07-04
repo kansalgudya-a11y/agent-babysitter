@@ -257,22 +257,22 @@ public actor SessionStore {
                existing.capturedAt >= limit.capturedAt { continue }
             latest[tracked.adapter.id] = limit
         }
-        // Antigravity: fill plan name from the IDE state for any surface with
-        // sessions listed (no percentage is stored anywhere on disk).
+        // Antigravity: fill the five-hour quota (and plan) from the IDE state
+        // for any surface with sessions listed — the same numbers the app's
+        // own Model Quota page shows, read from disk with zero network.
         let antigravityIDsWithSessions = Set(sessions.values
             .map(\.adapter.id).filter { $0.hasPrefix("antigravity") })
-        if !antigravityIDsWithSessions.isEmpty, let plan = antigravityPlan() {
+        if !antigravityIDsWithSessions.isEmpty, let usage = antigravityUsage() {
             for id in antigravityIDsWithSessions where latest[id] == nil {
-                latest[id] = UsageLimitSnapshot(usedPercent: nil, windowMinutes: 300,
-                                                resetsAt: nil, capturedAt: Date(), plan: plan)
+                latest[id] = usage
             }
         }
         return latest
     }
 
-    private func antigravityPlan() -> String? {
+    private func antigravityUsage() -> UsageLimitSnapshot? {
         for case let adapter as AntigravityAdapter in configuration.adapters {
-            if let plan = adapter.planFromDisk() { return plan }
+            if let usage = adapter.usageFromDisk() { return usage }
         }
         return nil
     }

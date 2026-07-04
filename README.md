@@ -50,8 +50,9 @@ disabling removes only our entries.
   are Working/Done/Ended only, cost shows "—", and turn notifications are
   suppressed (a >60s silent think would otherwise flap).
 - **5-hour limits, per agent**: Codex shows a real % from disk (CLI + desktop,
-  zero network). Antigravity shows its plan tier read from the IDE state
-  ("Google AI Pro", zero network) — no % is stored anywhere locally. Claude Code
+  zero network). Antigravity shows the real five-hour
+  quota % (and plan tier) that its own Model Quota page displays, read from
+  the IDE's synced account state — zero network. Claude Code
   never writes its 5h % to disk, but it computes the number locally for its
   own status line — the opt-in "Claude usage meter" (Settings → Advanced)
   records it with a tiny status-line helper, so the real % shows with zero
