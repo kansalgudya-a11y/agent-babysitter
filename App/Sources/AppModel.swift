@@ -45,6 +45,8 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var hooksError: String?
+    @Published private(set) var welcomeDismissed: Bool =
+        UserDefaults.standard.bool(forKey: "welcomeDismissed")
 
     private let projectsRoot: URL
     private let adapters: [any AgentAdapter] =
@@ -88,6 +90,16 @@ final class AppModel: ObservableObject {
         notificationManager.primeAuthorization()
         start()
         if precision { applyPrecisionMode() }
+    }
+
+    func dismissWelcome() {
+        welcomeDismissed = true
+        UserDefaults.standard.set(true, forKey: "welcomeDismissed")
+    }
+
+    func resetWelcome() {
+        welcomeDismissed = false
+        UserDefaults.standard.set(false, forKey: "welcomeDismissed")
     }
 
     func dismiss(_ row: SessionRow) {
