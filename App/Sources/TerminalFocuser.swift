@@ -30,6 +30,8 @@ enum TerminalFocuser {
     static let agentBundleIDs: [String: [String]] = [
         "claude-code": ["com.anthropic.claudefordesktop"],
         "codex": ["com.openai.codex"],
+        "antigravity": ["com.google.antigravity"],
+        "antigravity-ide": ["com.google.antigravity-ide"],
     ]
 
     static func focusSession(_ row: SessionRow) {

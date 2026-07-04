@@ -21,6 +21,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     public var isDesktopApp: Bool {
         entrypoint?.hasPrefix("claude-desktop") == true
             || entrypoint?.hasPrefix("Codex Desktop") == true
+            || entrypoint == "Antigravity"
+            || entrypoint == "Antigravity IDE"
     }
 
     public init(id: String, projectName: String, state: SessionState,
@@ -86,7 +88,7 @@ public actor SessionStore {
     }
 
     private struct TrackedSession {
-        let tailer: TranscriptFileTailer
+        let reader: any SessionReading
         let adapter: any AgentAdapter
         let projectDirName: String
         var pid: Int32?
@@ -127,9 +129,9 @@ public actor SessionStore {
         for path in paths {
             guard let adapter = configuration.adapters.first(where: { $0.isTranscript(path: path) })
             else { continue }
-            let url = URL(fileURLWithPath: path)
+            let url = adapter.canonicalTranscriptURL(forPath: path)
             track(url: url, adapter: adapter,
-                  projectDirName: url.deletingLastPathComponent().lastPathComponent)
+                  projectDirName: adapter.projectDirName(forTranscript: url))
         }
         rematch()
     }
@@ -149,30 +151,30 @@ public actor SessionStore {
 
     public func rows(at now: Date = Date()) -> [SessionRow] {
         var rows: [SessionRow] = []
-        for (id, tracked) in sessions where tracked.everHadProcess && !tracked.tailer.isSidechain {
+        for (id, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,
-                lastGrowthAt: tracked.tailer.lastGrowthAt,
-                turnPhase: tracked.tailer.reducer.turnPhase,
-                hasPendingToolUses: !tracked.tailer.reducer.pendingToolUseIDs.isEmpty,
+                lastGrowthAt: tracked.reader.lastGrowthAt,
+                turnPhase: tracked.reader.turnPhase,
+                hasPendingToolUses: tracked.reader.hasPendingToolUses,
                 latestHookEvent: tracked.latestHookSignal,
                 precisionModeEnabled: configuration.precisionModeEnabled)
             let state = SessionStateEngine.evaluate(signals, at: now,
                                                     stallThreshold: configuration.stallThreshold,
                                                     workingWindow: configuration.workingWindow)
-            let cwd = tracked.tailer.lastKnownCWD
+            let cwd = tracked.reader.lastKnownCWD
             rows.append(SessionRow(
                 id: id,
                 projectName: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
                     ?? tracked.projectDirName,
                 state: state,
-                turnStartedAt: tracked.tailer.reducer.currentTurnStartedAt,
-                lastGrowthAt: tracked.tailer.lastGrowthAt,
-                isUnreadable: tracked.tailer.isUnreadable,
+                turnStartedAt: tracked.reader.currentTurnStartedAt,
+                lastGrowthAt: tracked.reader.lastGrowthAt,
+                isUnreadable: tracked.reader.isUnreadable,
                 pid: tracked.pid,
                 cwd: cwd,
-                cost: tracked.tailer.costAccumulator.cost,
-                entrypoint: tracked.tailer.lastKnownEntrypoint,
+                cost: tracked.reader.cost,
+                entrypoint: tracked.reader.lastKnownEntrypoint,
                 agentID: tracked.adapter.id,
                 agentName: tracked.adapter.displayName))
         }
@@ -198,8 +200,8 @@ public actor SessionStore {
         let midnight = calendar.startOfDay(for: now)
         var total = SessionCost()
         for (_, tracked) in sessions {
-            guard let growth = tracked.tailer.lastGrowthAt, growth >= midnight else { continue }
-            let cost = tracked.tailer.costAccumulator.cost
+            guard let growth = tracked.reader.lastGrowthAt, growth >= midnight else { continue }
+            let cost = tracked.reader.cost
             total.dollars += cost.dollars
             total.totalTokens += cost.totalTokens
             total.unknownModels.formUnion(cost.unknownModels)
@@ -214,11 +216,11 @@ public actor SessionStore {
     private func track(url: URL, adapter: any AgentAdapter, projectDirName: String) {
         let id = adapter.sessionID(forTranscript: url)
         if sessions[id] == nil {
-            sessions[id] = TrackedSession(tailer: TranscriptFileTailer(url: url, adapter: adapter),
+            sessions[id] = TrackedSession(reader: adapter.makeReader(url: url),
                                           adapter: adapter,
                                           projectDirName: projectDirName)
         }
-        _ = try? sessions[id]?.tailer.catchUp()
+        try? sessions[id]?.reader.refresh()
     }
 
     private func rematch() {
@@ -228,8 +230,8 @@ public actor SessionStore {
                 return SessionMatchCandidate(
                     sessionID: id,
                     projectDirName: tracked.projectDirName,
-                    lastKnownCWD: tracked.tailer.lastKnownCWD,
-                    lastModified: tracked.tailer.lastGrowthAt ?? .distantPast)
+                    lastKnownCWD: tracked.reader.lastKnownCWD,
+                    lastModified: tracked.reader.lastGrowthAt ?? .distantPast)
             }
             let match = adapter.match(processes: latestProcessesByAdapter[adapter.id] ?? [],
                                       candidates: candidates)

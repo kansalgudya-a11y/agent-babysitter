@@ -43,6 +43,27 @@ public protocol AgentAdapter: Sendable {
     /// Pair live processes with sessions; unmatched sessions read as Ended.
     func match(processes: [RunningProcess],
                candidates: [SessionMatchCandidate]) -> [String: Int32]
+    /// Map a changed filesystem path to the transcript it belongs to
+    /// (e.g. SQLite `-wal`/`-shm` siblings → the base `.db`).
+    func canonicalTranscriptURL(forPath path: String) -> URL
+    /// Reader for one transcript. Defaults to the line tailer.
+    func makeReader(url: URL) -> any SessionReading
+    /// Label used when a session has no known cwd to display.
+    func projectDirName(forTranscript url: URL) -> String
+}
+
+public extension AgentAdapter {
+    func canonicalTranscriptURL(forPath path: String) -> URL {
+        URL(fileURLWithPath: path)
+    }
+
+    func makeReader(url: URL) -> any SessionReading {
+        TranscriptFileTailer(url: url, adapter: self)
+    }
+
+    func projectDirName(forTranscript url: URL) -> String {
+        url.deletingLastPathComponent().lastPathComponent
+    }
 }
 
 /// Claude Code: `~/.claude/projects/<munged-cwd>/<session-uuid>.jsonl`.

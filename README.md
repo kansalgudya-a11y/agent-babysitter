@@ -1,6 +1,6 @@
 # Agent Babysitter
 
-macOS menu bar app that monitors running coding-agent sessions (Claude Code and Codex): working /
+macOS menu bar app that monitors running coding-agent sessions (Claude Code, Codex, and Antigravity): working /
 waiting for you / done / stalled / ended — with native notifications and live
 per-session token cost. No network calls, no telemetry.
 
@@ -28,7 +28,10 @@ xcodebuild -project AgentBabysitter.xcodeproj -scheme AgentBabysitter build
 Each agent is an `AgentAdapter` (layout + line parser + process matching)
 that normalizes its transcripts into one entry model. Claude Code tails
 `~/.claude/projects/` (matching processes by munged cwd); Codex tails
-`~/.codex/sessions/` rollouts (matching by transcript-reported cwd). A
+`~/.codex/sessions/` rollouts (matching by transcript-reported cwd);
+Antigravity (desktop/IDE/`agy` CLI) is activity-based — its conversations are
+SQLite+protobuf with no public schema, so it reports Working/Done/Ended from
+conversation-file writes and never fakes Waiting/Stalled or cost. A
 `ps`/`lsof` poll every 5s feeds all adapters from one scan. A pure state engine folds transcript
 facts + process liveness + optional Precision-mode hook signals into one of
 five states per session. Cost is recomputed from transcripts (deduped by

@@ -47,7 +47,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var hooksError: String?
 
     private let projectsRoot: URL
-    private let adapters: [any AgentAdapter] = [ClaudeCodeAdapter(), CodexAdapter()]
+    private let adapters: [any AgentAdapter] =
+        [ClaudeCodeAdapter(), CodexAdapter()] + AntigravityAdapter.allSurfaces()
     private let store: SessionStore
     private let processWatcher: ProcessWatcher
     private var fsWatchers: [FSEventsWatcher] = []

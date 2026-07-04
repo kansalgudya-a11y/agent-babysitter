@@ -119,6 +119,9 @@ struct SessionRowView: View {
 extension SessionCost {
     /// "$1.22", or token counts when pricing is unknown — never guessed dollars.
     var display: String {
+        if dollars == 0 && totalTokens == 0 && !hasUnknownPricing {
+            return "—"  // no readable usage at all (e.g. Antigravity)
+        }
         if hasUnknownPricing {
             let tokens = totalTokens >= 1000 ? "\(totalTokens / 1000)k" : "\(totalTokens)"
             return dollars > 0

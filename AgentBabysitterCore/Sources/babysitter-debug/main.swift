@@ -4,7 +4,8 @@ import AgentBabysitterCore
 // Dogfooding tool: run the exact pipeline the menu bar renders from and
 // print what it shows. `swift run babysitter-debug`
 
-let adapters: [any AgentAdapter] = [ClaudeCodeAdapter(), CodexAdapter()]
+let adapters: [any AgentAdapter] =
+    [ClaudeCodeAdapter(), CodexAdapter()] + AntigravityAdapter.allSurfaces()
 let store = SessionStore(configuration: .init(
     projectsRoot: ClaudeCodeAdapter().transcriptRoot,
     adapters: adapters))
@@ -34,9 +35,14 @@ print("\nmenu bar label:  \(dot) \(summary.activeCount)")
 
 print("\nsession rows:")
 for row in await store.rows() {
-    let cost = row.cost.hasUnknownPricing
-        ? "\(row.cost.totalTokens) tok (pricing unknown)"
-        : String(format: "$%.2f", row.cost.dollars)
+    let cost: String
+    if row.cost.hasUnknownPricing {
+        cost = "\(row.cost.totalTokens) tok (pricing unknown)"
+    } else if row.cost.dollars == 0 && row.cost.totalTokens == 0 {
+        cost = "—"
+    } else {
+        cost = String(format: "$%.2f", row.cost.dollars)
+    }
     let host = row.isDesktopApp ? "desktop" : (row.entrypoint ?? "?")
     print("  [\(row.state)] \(row.agentName): \(row.projectName)  session=\(row.id.prefix(8))  "
         + "pid=\(row.pid.map(String.init) ?? "-")  host=\(host)  \(cost)")
