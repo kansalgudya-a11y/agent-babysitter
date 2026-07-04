@@ -161,6 +161,19 @@ enum UISnapshots {
                 welcomeDismissed: false)
         }
 
+        let statsModel = AppModel()
+        statsModel.applyFixture(
+            rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+            usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
+            todayCost: SessionCost(dollars: 22.9), costHistory: history,
+            weekStats: WeekStats(costByAgent: ["claude-code": 261.3, "codex": 38.9,
+                                               "antigravity": 12.4],
+                                 sessionCount: 47, activeMinutes: 1_147,
+                                 days: history.map { (day: $0.day, dollars: $0.dollars,
+                                                      activeMinutes: [40.0, 190, 12, 300, 0, 420, 88][
+                                                          Int($0.day.timeIntervalSince(history[0].day) / 86_400)]) }))
+        results.append(("stats", AnyView(StatsView(model: statsModel))))
+
         // Settings (Form/TabView) is AppKit-backed and invisible to
         // ImageRenderer — verified by eye in the running app instead.
         results.append(("menubar-labels", AnyView(

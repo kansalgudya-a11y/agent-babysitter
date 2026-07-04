@@ -192,7 +192,8 @@ final class AppModel: ObservableObject {
                       limitDanger: Bool = false,
                       noAgentsDetected: Bool = false,
                       welcomeDismissed: Bool = true,
-                      processDetectionDegraded: Bool = false) {
+                      processDetectionDegraded: Bool = false,
+                      weekStats: WeekStats = WeekStats()) {
         self.rows = rows
         self.summary = summary
         self.usageLimits = usageLimits
@@ -204,6 +205,7 @@ final class AppModel: ObservableObject {
         self.noAgentsDetected = noAgentsDetected
         self.welcomeDismissed = welcomeDismissed
         self.processDetectionDegraded = processDetectionDegraded
+        self.weekStats = weekStats
     }
 
     /// Poll live usage on a slow cadence while enabled. Each probe costs one
@@ -457,12 +459,18 @@ final class AppModel: ObservableObject {
         defaults.set(sessionsSeen, forKey: "sessionsSeen")
         defaults.set(activeMinutes, forKey: "activeMinutes")
 
+        let costTotals = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        let days = DailyCostHistory.series(costTotals).map { entry in
+            (day: entry.day, dollars: entry.dollars,
+             activeMinutes: activeMinutes[DailyCostHistory.key(for: entry.day)] ?? 0)
+        }
         weekStats = WeekStats(
             costByAgent: byAgent.values.reduce(into: [:]) { totals, day in
                 for (agent, dollars) in day { totals[agent, default: 0] += dollars }
             },
             sessionCount: sessionsSeen.values.reduce(0) { $0 + $1.count },
-            activeMinutes: activeMinutes.values.reduce(0, +))
+            activeMinutes: activeMinutes.values.reduce(0, +),
+            days: days)
     }
 
     /// Fold today's running total into the persisted 7-day history. Max

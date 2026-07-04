@@ -364,6 +364,9 @@ struct MenuContent: View {
             }
             Spacer()
             Button {
+                // Menu bar apps don't activate on their own — without this
+                // the stats window opens behind whatever app is frontmost.
+                NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "stats")
             } label: {
                 Image(systemName: "chart.bar")
