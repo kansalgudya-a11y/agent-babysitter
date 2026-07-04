@@ -6,3 +6,4 @@ DerivedData/
 .swiftpm/
 AgentBabysitter.xcodeproj/
 App/Info.plist
+build/

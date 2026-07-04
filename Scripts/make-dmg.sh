@@ -7,7 +7,9 @@ cd "$(dirname "$0")/.."
 
 xcodegen generate --quiet
 xcodebuild -project AgentBabysitter.xcodeproj -scheme AgentBabysitter \
-    -configuration Release -derivedDataPath build build
+    -configuration Release -derivedDataPath build \
+    -destination "generic/platform=macOS" \
+    ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build
 
 APP="build/Build/Products/Release/AgentBabysitter.app"
 VERSION=$(defaults read "$(pwd)/$APP/Contents/Info" CFBundleShortVersionString)
