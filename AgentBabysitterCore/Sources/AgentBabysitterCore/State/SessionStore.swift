@@ -194,6 +194,7 @@ public actor SessionStore {
 
     public func rows(at now: Date = Date(),
                      includeHidden: Bool = false) -> [SessionRow] {
+        reconcileWithDisk()
         prune(at: now)
         var rows: [SessionRow] = []
         for (_, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
@@ -359,6 +360,27 @@ public actor SessionStore {
     private var netSamples: [String: (bytes: Int, at: Date)] = [:]
     private var netActiveAt: [String: Date] = [:]
     private var netProbes: [String: Task<Void, Never>] = [:]
+    private var reconcileMtimes: [String: Date] = [:]
+
+    /// FSEvents occasionally drops events (observed live: a session grew
+    /// and the app never heard). A cheap stat per tracked transcript on
+    /// every rows() pass guarantees growth is noticed within one tick.
+    private func reconcileWithDisk() {
+        let fm = FileManager.default
+        for (key, tracked) in sessions {
+            let url = tracked.reader.url
+            var newest = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+                ?? .distantPast
+            for suffix in ["-wal", "-shm"] {
+                if let m = (try? fm.attributesOfItem(atPath: url.path + suffix))?[.modificationDate] as? Date {
+                    newest = max(newest, m)
+                }
+            }
+            if let seen = reconcileMtimes[key], newest <= seen { continue }
+            reconcileMtimes[key] = newest
+            try? sessions[key]?.reader.refresh()
+        }
+    }
 
     /// Detached loop: sample the adapter's byte counter every 2.5s, record
     /// activity on >2KB deltas, stop when the session loses that process.

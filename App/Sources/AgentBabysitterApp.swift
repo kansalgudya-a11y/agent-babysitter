@@ -49,14 +49,13 @@ struct MenuBarLabel: View {
     var body: some View {
         // ⚠️ prefixes everything when any usage window is at 90%+ — the
         // babysitter's job is exactly this warning.
-        let warning = limitDanger ? "⚠️ " : ""
         Group {
         switch style {
         case "cost" where costToday > 0:
-            Text("\(warning)\(dot)$\(costToday, specifier: "%.0f")")
+            composed(text: "$\(Int(costToday))")
         case "limit":
             if let hottestLimit {
-                Text("\(warning)\(dot)\(Int(hottestLimit))%")
+                composed(text: "\(Int(hottestLimit))%")
             } else {
                 statusLabel
             }
@@ -65,6 +64,27 @@ struct MenuBarLabel: View {
         }
         }
         .accessibilityLabel(a11yDescription)
+    }
+
+    /// MenuBarExtra labels render reliably only as a single Text, and emoji
+    /// glyphs at text size inflate the line height, sinking the item below
+    /// its neighbors - so the label is one CONCATENATED Text with the emoji
+    /// segments at a smaller size and a slight baseline lift.
+    private func composed(text: String?, count: Int? = nil) -> some View {
+        var label = Text("")
+        if limitDanger {
+            label = label + Text("⚠️ ").font(.system(size: 10)).baselineOffset(1)
+        }
+        if summary.activeCount > 0, let state = summary.worstState {
+            label = label + Text("\(state.dotEmoji) ").font(.system(size: 9)).baselineOffset(1)
+        }
+        if let text {
+            label = label + Text(text).font(.system(size: 13, weight: .medium))
+        }
+        if let count {
+            label = label + Text("\(count)").font(.system(size: 13, weight: .medium))
+        }
+        return label
     }
 
     private var a11yDescription: String {
@@ -88,16 +108,12 @@ struct MenuBarLabel: View {
     @ViewBuilder private var statusLabel: some View {
         if summary.activeCount == 0 {
             if limitDanger {
-                Text("⚠️")
+                Text("⚠️").font(.system(size: 10))
             } else {
                 Image(systemName: "moon.zzz")
             }
-        } else if let state = summary.worstState {
-            // Emoji render in color in the menu bar; SF Symbols would be
-            // template-flattened to monochrome.
-            Text("\(limitDanger ? "⚠️ " : "")\(state.dotEmoji) \(summary.activeCount)")
         } else {
-            Image(systemName: "moon.zzz")
+            composed(text: nil, count: summary.activeCount)
         }
     }
 }
