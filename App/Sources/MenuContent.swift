@@ -376,7 +376,7 @@ struct MenuContent: View {
             .buttonStyle(.borderless)
             .popover(isPresented: $showCostInfo, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Estimated from token usage at API list prices.\nOn a subscription plan (Pro/Max) this is not an extra charge — it shows the value of today's usage.")
+                    Text("Estimated from token usage at API list prices.\nOn a subscription plan (Pro/Max) this is not an extra charge — it shows the value of today's usage.\nToken counts are new work (input + output + newly cached); cached-context re-reads are priced in but not counted.")
                         .font(.caption)
                     if model.costHistory.count > 1 {
                         Divider()

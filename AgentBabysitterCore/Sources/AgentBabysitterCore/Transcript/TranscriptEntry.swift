@@ -33,8 +33,13 @@ public struct TokenUsage: Equatable, Sendable {
         }
     }
 
+    /// Tokens of NEW work: input, output, and freshly cached content.
+    /// Cache re-reads are deliberately excluded — the same context is
+    /// re-read on every call, so counting it inflates a normal day's usage
+    /// ~100x (a real day measured 2.6M new tokens vs 266M with re-reads).
+    /// Their (cheap) price still lands in the dollar estimate.
     public var totalTokens: Int {
-        inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens
+        inputTokens + outputTokens + cacheCreationInputTokens
     }
 }
 

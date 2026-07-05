@@ -57,8 +57,9 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertFalse(tailer.isSidechain)
 
         // token_count usage: OpenAI models have no price entry — token counts
-        // surface with "pricing unknown", dollars are never guessed.
-        XCTAssertEqual(tailer.costAccumulator.cost.totalTokens, 8800)
+        // surface with "pricing unknown", dollars are never guessed. Cached
+        // re-reads (3000 in the fixture) are excluded from the count.
+        XCTAssertEqual(tailer.costAccumulator.cost.totalTokens, 5800)
         XCTAssertEqual(tailer.costAccumulator.cost.dollars, 0)
         XCTAssertTrue(tailer.costAccumulator.cost.hasUnknownPricing)
     }
