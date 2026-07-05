@@ -81,7 +81,11 @@ public struct CodexAdapter: AgentAdapter {
                   let pid = Int32(trimmed[..<space]) else { continue }
             let command = trimmed[trimmed.index(after: space)...]
                 .trimmingCharacters(in: .whitespaces)
-            if command.split(separator: "/").last == "codex" {
+            // CLI binary ("codex", any path) or the desktop app's exact
+            // main binary — its Electron helpers ("Codex (Service)",
+            // crashpad) must not count as sessions.
+            if command.split(separator: "/").last == "codex"
+                || command.hasSuffix("/Codex.app/Contents/MacOS/Codex") {
                 pids.insert(pid)
             }
         }

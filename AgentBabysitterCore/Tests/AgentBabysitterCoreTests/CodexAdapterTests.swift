@@ -147,8 +147,10 @@ final class CodexAdapterTests: XCTestCase {
         300 /Users/dev/Library/Application Support/Codex/engine/codex
         400 /Applications/Claude.app/Contents/MacOS/Claude
         """
-        XCTAssertEqual(adapter.agentPIDs(psComm: psComm, psArgs: ""), [100, 300],
-                       "lowercase codex engine binaries only — the Electron shell is not a session process")
+        // The desktop app hosts sessions with no separate engine process
+        // (verified 2026-07: a desktop session ran with only the Electron
+        // shell alive), so the main binary must match - helpers must not.
+        XCTAssertEqual(adapter.agentPIDs(psComm: psComm, psArgs: ""), [100, 200, 300])
     }
 
     func testMatchPairsProcessesBySessionCWD() {
@@ -201,5 +203,19 @@ final class CodexAdapterTests: XCTestCase {
         let limits = await store.usageLimits()
         XCTAssertEqual(limits["codex"]?.usedPercent, 17.0)
         XCTAssertNil(limits["claude-code"], "agents without local limit data have no entry")
+    }
+}
+
+extension CodexAdapterTests {
+    /// The desktop app's main binary is "Codex" (capital C) — it must match;
+    /// its Electron helpers must not.
+    func testDesktopAppProcessMatches() {
+        let comm = """
+        100 /Applications/Codex.app/Contents/MacOS/Codex
+        200 /Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/Versions/1/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)
+        300 /Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/Versions/1/Helpers/browser_crashpad_handler
+        400 /opt/homebrew/bin/codex
+        """
+        XCTAssertEqual(CodexAdapter().agentPIDs(psComm: comm, psArgs: ""), [100, 400])
     }
 }

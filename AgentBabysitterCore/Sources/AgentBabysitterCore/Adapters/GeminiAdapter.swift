@@ -155,9 +155,13 @@ public struct GeminiAdapter: AgentAdapter {
     }
 
     public func makeReader(url: URL) -> any SessionReading {
+        // The desktop chat streams store writes while replying, then goes
+        // silent - measured: zero idle writes - so 25s of quiet is a safe,
+        // much snappier "done" than the default minute.
         FileActivityReader(url: url,
                            sessionID: sessionID(forTranscript: url),
-                           entrypoint: displayName)
+                           entrypoint: displayName,
+                           idleCutoff: surface == .desktop ? 25 : 60)
     }
 
     /// No cwd is recoverable from these processes; pair newest sessions

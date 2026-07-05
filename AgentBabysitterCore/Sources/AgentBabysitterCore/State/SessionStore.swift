@@ -31,6 +31,7 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
             || entrypoint?.hasPrefix("Codex Desktop") == true
             || entrypoint == "Antigravity"
             || entrypoint == "Antigravity IDE"
+            || entrypoint == "Gemini"
     }
 
     public init(id: String, projectName: String, state: SessionState,

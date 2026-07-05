@@ -32,6 +32,7 @@ enum TerminalFocuser {
         "codex": ["com.openai.codex"],
         "antigravity": ["com.google.antigravity"],
         "antigravity-ide": ["com.google.antigravity-ide"],
+        "gemini": ["com.google.GeminiMacOS"],
     ]
 
     static func focusSession(_ row: SessionRow) {
@@ -41,7 +42,10 @@ enum TerminalFocuser {
             }
         }
         if let pid = row.pid {
-            for ancestor in ProcessAncestry.ancestorPIDs(of: pid) {
+            // The session's own process first: for desktop-app agents the
+            // matched pid IS the app, so this focuses correctly even for
+            // agents with no bundle-id mapping.
+            for ancestor in [pid] + ProcessAncestry.ancestorPIDs(of: pid) {
                 if let app = NSRunningApplication(processIdentifier: ancestor),
                    app.activationPolicy == .regular {
                     app.activate()
