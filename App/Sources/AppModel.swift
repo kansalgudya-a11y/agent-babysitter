@@ -56,16 +56,27 @@ final class AppModel: ObservableObject {
 
     var currency: Currency { Currency.byCode(currencyCode) ?? .usd }
 
+    /// We only ever convert when we hold a rate that belongs to the CURRENT
+    /// currency — otherwise (e.g. the user just switched currency and the
+    /// fetch hasn't landed, or failed offline) we fall back to plain USD
+    /// rather than paint a foreign symbol onto a stale or 1:1 rate.
+    var displayCurrency: Currency {
+        currency.code == "USD" || cachedCurrencyRate?.code == currency.code ? currency : .usd
+    }
+    var effectiveRate: Double {
+        displayCurrency.code == "USD" ? 1 : currencyRate
+    }
+
     /// Format a USD amount in the user's chosen currency. The single entry
     /// point every cost label goes through.
     func money(_ usd: Double, approximate: Bool = true) -> String {
-        CurrencyFormatter.string(usd: usd, currency: currency, rate: currencyRate,
+        CurrencyFormatter.string(usd: usd, currency: displayCurrency, rate: effectiveRate,
                                  approximate: approximate)
     }
 
     /// Compact form for the menu bar (no decimals, k/M past 10k).
     func moneyCompact(_ usd: Double) -> String {
-        CurrencyFormatter.compact(usd: usd, currency: currency, rate: currencyRate)
+        CurrencyFormatter.compact(usd: usd, currency: displayCurrency, rate: effectiveRate)
     }
     /// Positive = minutes to keep finished rows, 0 = never hide,
     /// negative = hide immediately (same tick the state flips done).
@@ -303,6 +314,10 @@ final class AppModel: ObservableObject {
         if let currency {
             self.currencyCode = currency.code
             self.currencyRate = currency.rate
+            // Mark the rate as belonging to this currency so displayCurrency
+            // resolves to it (not the USD fallback) in fixtures.
+            self.cachedCurrencyRate = .init(code: currency.code, rate: currency.rate,
+                                            fetchedAt: Date())
         }
         self.rows = rows
         self.summary = summary

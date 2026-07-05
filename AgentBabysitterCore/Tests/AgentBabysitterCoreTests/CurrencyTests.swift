@@ -71,3 +71,25 @@ final class CurrencyTests: XCTestCase {
         XCTAssertNil(CurrencyRateParsing.parse(Data(#"{"result":"success","rates":{}}"#.utf8)))
     }
 }
+
+final class UsageLimitExpiryTests: XCTestCase {
+    private func snap(resetsAt: Date?) -> UsageLimitSnapshot {
+        UsageLimitSnapshot(usedPercent: 50, windowMinutes: 300, resetsAt: resetsAt,
+                           capturedAt: Date(), plan: "pro")
+    }
+
+    func testExpiredWhenResetInPast() {
+        let now = Date()
+        XCTAssertTrue(snap(resetsAt: now.addingTimeInterval(-60)).isExpired(at: now))
+    }
+
+    func testNotExpiredWhenResetInFuture() {
+        let now = Date()
+        XCTAssertFalse(snap(resetsAt: now.addingTimeInterval(60)).isExpired(at: now))
+    }
+
+    func testNotExpiredWhenNoResetTime() {
+        // Plan-only / no-reading snapshots have no reset — never "reset".
+        XCTAssertFalse(snap(resetsAt: nil).isExpired())
+    }
+}

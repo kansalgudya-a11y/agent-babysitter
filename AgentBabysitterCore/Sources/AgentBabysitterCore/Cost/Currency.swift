@@ -73,13 +73,23 @@ public enum CurrencyFormatter {
         return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
     }
 
+    /// NumberFormatters are expensive to build; only two shapes are ever
+    /// needed (0 and 2 fraction digits), so cache them. Guarded by a lock —
+    /// formatting can run from any thread that renders a cost label.
+    private static let formatterLock = NSLock()
+    private nonisolated(unsafe) static var formatterCache: [Int: NumberFormatter] = [:]
+
     private static func decimalFormatter(_ digits: Int) -> NumberFormatter {
+        formatterLock.lock()
+        defer { formatterLock.unlock() }
+        if let cached = formatterCache[digits] { return cached }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         formatter.minimumFractionDigits = digits
         formatter.maximumFractionDigits = digits
         formatter.groupingSeparator = ","
         formatter.usesGroupingSeparator = true
+        formatterCache[digits] = formatter
         return formatter
     }
 }

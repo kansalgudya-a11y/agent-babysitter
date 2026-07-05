@@ -189,11 +189,11 @@ struct MenuContent: View {
                      "antigravity": 2, "antigravity-ide": 3, "antigravity-cli": 4,
                      "gemini": 5, "gemini-cli": 6, "cursor": 7, "manus": 8]
         let now = Date()
-        // An agent whose window has rolled over (resetsAt in the past) shows a
-        // "reset" bar with nothing to act on — sink those below agents with a
-        // live reading, keeping the fixed order within each group.
+        // An agent whose window has rolled over shows a "reset" bar with
+        // nothing to act on — sink those below agents with a live reading,
+        // keeping the fixed order within each group.
         func resetTier(_ limit: UsageLimitSnapshot?) -> Int {
-            (limit?.resetsAt).map { $0 < now ? 1 : 0 } ?? 0
+            (limit?.isExpired(at: now) ?? false) ? 1 : 0
         }
         return model.installedAgents
             .filter { showAllLimits || model.runningAgentIDs.contains($0.id) }
@@ -256,7 +256,7 @@ struct MenuContent: View {
     private func limitRowOpacity(_ entry: (id: String, name: String,
                                            limit: UsageLimitSnapshot?, running: Bool)) -> Double {
         if !entry.running { return 0.55 }
-        if let resets = entry.limit?.resetsAt, resets < Date() { return 0.6 }
+        if entry.limit?.isExpired() == true { return 0.6 }
         return 1
     }
 
@@ -282,7 +282,7 @@ struct MenuContent: View {
                             .help(entry.id.hasPrefix("gemini") ? "Gemini keeps its usage limits on Google's servers only — nothing is stored on your Mac. The plan tier comes from your Google account."
                                   : entry.id == "cursor" ? "Cursor stores only your plan tier on this Mac. Turn on Live usage in Settings → Advanced to fetch your real numbers from cursor.com with your own login."
                                   : "Only the plan tier is available offline right now — the % appears once the agent syncs its quota to disk.")
-                    } else if let resets = limit.resetsAt, resets < Date() {
+                    } else if limit.isExpired() {
                         ProgressView(value: 0)
                             .tint(.secondary)
                         Text("reset")

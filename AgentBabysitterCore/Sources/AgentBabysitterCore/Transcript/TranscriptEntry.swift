@@ -119,6 +119,13 @@ public struct UsageLimitSnapshot: Equatable, Sendable, Codable {
     public let weeklyUsedPercent: Double?
     public let weeklyResetsAt: Date?
 
+    /// The window has rolled over (its reset time is in the past), so the
+    /// used-% is stale and there's nothing to act on. Single source of truth
+    /// for the "reset" state the menu sorts, dims, and labels by.
+    public func isExpired(at now: Date = Date()) -> Bool {
+        resetsAt.map { $0 < now } ?? false
+    }
+
     public init(usedPercent: Double?, windowMinutes: Int, resetsAt: Date?,
                 capturedAt: Date, plan: String?, isLive: Bool = false,
                 weeklyUsedPercent: Double? = nil, weeklyResetsAt: Date? = nil) {

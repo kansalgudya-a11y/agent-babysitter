@@ -38,7 +38,9 @@ actor CurrencyRateService {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let rates = CurrencyRateParsing.parse(data),
               let rate = rates.rate(for: code) else {
-            return cached  // keep the last good value if we can't refresh
+            // Keep the last good value only if it's for THIS currency — never
+            // hand back another currency's rate to be shown under this symbol.
+            return cached?.code == code ? cached : nil
         }
         return CachedRate(code: code, rate: rate, fetchedAt: Date())
     }

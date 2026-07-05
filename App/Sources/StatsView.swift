@@ -84,8 +84,8 @@ struct StatsView: View {
                 Divider()
                 // Dollars and hours live on very different scales — one
                 // shared axis buries the smaller series, so: two charts.
-                bucketChart(title: "Estimated cost per \(unitName) (\(model.currency.symbol))",
-                            color: .accentColor) { $0.dollars * (model.currency.code == "USD" ? 1 : model.currencyRate) }
+                bucketChart(title: "Estimated cost per \(unitName) (\(model.displayCurrency.symbol))",
+                            color: .accentColor) { $0.dollars * model.effectiveRate }
                 bucketChart(title: "Agent hours per \(unitName)",
                             color: .orange.opacity(0.85)) { $0.activeMinutes / 60 }
             }
