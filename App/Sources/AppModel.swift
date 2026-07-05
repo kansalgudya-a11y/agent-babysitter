@@ -42,6 +42,13 @@ final class AppModel: ObservableObject {
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
     }
+    /// Minutes after which finished sessions hide from the list; 0 = never.
+    @Published var doneAutoHideMinutes: Double {
+        didSet {
+            UserDefaults.standard.set(doneAutoHideMinutes, forKey: "doneAutoHideMinutes")
+            applyStoreConfiguration()
+        }
+    }
     @Published var stallThresholdMinutes: Double {
         didSet {
             UserDefaults.standard.set(stallThresholdMinutes, forKey: "stallThresholdMinutes")
@@ -159,18 +166,22 @@ final class AppModel: ObservableObject {
                                      "notifyLimit": true,
                                      "limitAlertThreshold": 80.0,
                                      "hotKeyEnabled": true,
-                                     "menuBarStyle": "status"])
+                                     "menuBarStyle": "status",
+                                     "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
         projectsRoot = root
         let stallMinutes = defaults.double(forKey: "stallThresholdMinutes")
         let precision = defaults.bool(forKey: "precisionModeEnabled")
+        let hideMinutes = defaults.double(forKey: "doneAutoHideMinutes")
         store = SessionStore(configuration: .init(projectsRoot: root,
                                                   stallThreshold: stallMinutes * 60,
                                                   precisionModeEnabled: precision,
-                                                  adapters: adapters))
+                                                  adapters: adapters,
+                                                  doneAutoHide: hideMinutes > 0 ? hideMinutes * 60 : nil))
         processWatcher = ProcessWatcher(adapters: adapters)
         notificationsMuted = defaults.bool(forKey: "notificationsMuted")
+        doneAutoHideMinutes = defaults.double(forKey: "doneAutoHideMinutes")
         stallThresholdMinutes = stallMinutes
         notifyWaiting = defaults.bool(forKey: "notifyWaiting")
         notifyDone = defaults.bool(forKey: "notifyDone")
@@ -551,7 +562,8 @@ final class AppModel: ObservableObject {
             projectsRoot: projectsRoot,
             stallThreshold: stallThresholdMinutes * 60,
             precisionModeEnabled: precisionModeEnabled,
-            adapters: adapters)
+            adapters: adapters,
+            doneAutoHide: doneAutoHideMinutes > 0 ? doneAutoHideMinutes * 60 : nil)
         Task {
             await store.updateConfiguration(configuration)
             await refresh()

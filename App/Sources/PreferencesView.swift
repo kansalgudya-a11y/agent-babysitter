@@ -44,6 +44,13 @@ struct PreferencesView: View {
                     Text("Jump to the neediest session with ⌥⌘B")
                     Text("From anywhere: focuses the session that's waiting for you (or stuck, or working).")
                 }
+                Picker("Hide finished sessions after", selection: $model.doneAutoHideMinutes) {
+                    Text("5 minutes").tag(5.0)
+                    Text("10 minutes").tag(10.0)
+                    Text("30 minutes").tag(30.0)
+                    Text("1 hour").tag(60.0)
+                    Text("Never").tag(0.0)
+                }
                 Picker("Show in the menu bar", selection: $model.menuBarStyle) {
                     Text("Status + count").tag("status")
                     Text("Today's cost").tag("cost")

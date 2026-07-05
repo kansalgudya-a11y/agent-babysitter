@@ -85,18 +85,25 @@ public actor SessionStore {
         /// Monitored agents. Defaults to Claude Code rooted at `projectsRoot`.
         public var adapters: [any AgentAdapter]
 
+        /// Hide finished (done/ended) rows this long after their last
+        /// activity; nil keeps them until the active-window prune. Costs and
+        /// limits still include hidden sessions.
+        public var doneAutoHide: TimeInterval?
+
         public init(projectsRoot: URL,
                     stallThreshold: TimeInterval = 300,
                     workingWindow: TimeInterval = 10,
                     activeWindow: TimeInterval = 24 * 3600,
                     precisionModeEnabled: Bool = false,
-                    adapters: [any AgentAdapter]? = nil) {
+                    adapters: [any AgentAdapter]? = nil,
+                    doneAutoHide: TimeInterval? = 10 * 60) {
             self.projectsRoot = projectsRoot
             self.stallThreshold = stallThreshold
             self.workingWindow = workingWindow
             self.activeWindow = activeWindow
             self.precisionModeEnabled = precisionModeEnabled
             self.adapters = adapters ?? [ClaudeCodeAdapter(transcriptRoot: projectsRoot)]
+            self.doneAutoHide = doneAutoHide
         }
     }
 
@@ -191,6 +198,24 @@ public actor SessionStore {
             if let dismissedAfter = tracked.dismissedAfter,
                (tracked.reader.lastGrowthAt ?? .distantPast) <= dismissedAfter {
                 continue
+            }
+            // Finished sessions tidy themselves away after a while; a new
+            // write revives the row (state re-derives every refresh).
+            if let hideAfter = configuration.doneAutoHide {
+                let quietSince = tracked.reader.lastGrowthAt ?? .distantPast
+                let stateNow = SessionStateEngine.evaluate(
+                    SessionSignals(processAlive: tracked.pid != nil,
+                                   lastGrowthAt: tracked.reader.lastGrowthAt,
+                                   turnPhase: tracked.reader.turnPhase,
+                                   hasPendingToolUses: tracked.reader.hasPendingToolUses,
+                                   latestHookEvent: tracked.latestHookSignal,
+                                   precisionModeEnabled: configuration.precisionModeEnabled),
+                    at: now, stallThreshold: configuration.stallThreshold,
+                    workingWindow: configuration.workingWindow)
+                if (stateNow == .done || stateNow == .ended),
+                   now.timeIntervalSince(quietSince) > hideAfter {
+                    continue
+                }
             }
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,

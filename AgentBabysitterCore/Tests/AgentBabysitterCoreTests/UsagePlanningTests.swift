@@ -221,3 +221,48 @@ final class TokenFormattingTests: XCTestCase {
         XCTAssertEqual(SessionCost.abbreviatedCount(1_540_000_000), "1.5B")
     }
 }
+
+final class DoneAutoHideTests: XCTestCase {
+
+    /// A done session older than the hide window disappears from rows;
+    /// a fresh one stays; nil keeps everything.
+    func testDoneRowsHideAfterConfiguredQuietTime() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("autohide-\(UUID().uuidString)/projects/-tmp-demo")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+
+        // One Claude transcript whose last write was 20 minutes ago.
+        let transcript = root.appendingPathComponent("11111111-aaaa-bbbb-cccc-000000000001.jsonl")
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-20 * 60))
+        try #"{"type":"user","timestamp":"__TS__","sessionId":"s1","cwd":"/tmp/demo","message":{"role":"user","content":"hi"}}"#
+            .replacingOccurrences(of: "__TS__", with: ts)
+            .write(to: transcript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-20 * 60)],
+            ofItemAtPath: transcript.path)
+
+        func rows(hideAfter: TimeInterval?) async -> [SessionRow] {
+            let store = SessionStore(configuration: .init(
+                projectsRoot: root.deletingLastPathComponent(),
+                adapters: [ClaudeCodeAdapter(transcriptRoot: root.deletingLastPathComponent())],
+                doneAutoHide: hideAfter))
+            await store.bootstrap()
+            // Give the session a (dead) process history so the row qualifies.
+            await store.processesUpdated(.init(processes: [
+                RunningProcess(pid: 1, cwd: "/tmp/demo"),
+            ], degraded: false))
+            await store.processesUpdated(.init(processes: [], degraded: false))
+            return await store.rows()
+        }
+
+        let hidden = await rows(hideAfter: 10 * 60)
+        XCTAssertTrue(hidden.isEmpty, "20m-quiet finished session must hide at 10m setting")
+
+        let kept = await rows(hideAfter: nil)
+        XCTAssertEqual(kept.count, 1, "Never (nil) keeps finished sessions listed")
+
+        let generous = await rows(hideAfter: 60 * 60)
+        XCTAssertEqual(generous.count, 1, "still inside a 1h window")
+    }
+}
