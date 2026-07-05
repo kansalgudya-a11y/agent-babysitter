@@ -187,7 +187,7 @@ struct MenuContent: View {
     private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?, running: Bool)] {
         let order = ["claude-code": 0, "codex": 1,
                      "antigravity": 2, "antigravity-ide": 3, "antigravity-cli": 4,
-                     "gemini": 5, "gemini-cli": 6, "cursor": 7, "manus": 8]
+                     "cursor": 5, "manus": 6, "gemini": 7, "gemini-cli": 8]
         let now = Date()
         // An agent whose window has rolled over shows a "reset" bar with
         // nothing to act on — sink those below agents with a live reading,
@@ -195,14 +195,17 @@ struct MenuContent: View {
         func resetTier(_ limit: UsageLimitSnapshot?) -> Int {
             (limit?.isExpired(at: now) ?? false) ? 1 : 0
         }
+        // Gemini keeps its usage on Google's servers (link-only, no local
+        // reading), so it sits at the very bottom, below even reset windows.
+        func bottomTier(_ id: String) -> Int { id.hasPrefix("gemini") ? 1 : 0 }
         return model.installedAgents
             .filter { showAllLimits || model.runningAgentIDs.contains($0.id) }
             .map { (id: $0.id, name: $0.name,
                     limit: model.usageLimits[$0.id],
                     running: model.runningAgentIDs.contains($0.id)) }
             .sorted { a, b in
-                (resetTier(a.limit), order[a.id] ?? 99, a.id)
-                    < (resetTier(b.limit), order[b.id] ?? 99, b.id)
+                (bottomTier(a.id), resetTier(a.limit), order[a.id] ?? 99, a.id)
+                    < (bottomTier(b.id), resetTier(b.limit), order[b.id] ?? 99, b.id)
             }
     }
 

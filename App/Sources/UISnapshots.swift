@@ -119,9 +119,9 @@ enum UISnapshots {
                 todayCost: SessionCost(dollars: 18.15), costHistory: history)
         }
 
-        // Currency conversion + reset-window ordering: Codex's window has
-        // rolled over, so it sinks below the live Claude/Antigravity readings
-        // and dims; costs render in ₹.
+        // Currency conversion + limits ordering: Codex's window has rolled
+        // over so it sinks below the live Claude/Antigravity readings and
+        // dims; Gemini (link-only) sits at the very bottom; costs render in ₹.
         menu("menu-currency") { model in
             model.applyFixture(
                 rows: [row("a", "checkout-service", .working, dollars: 12.38),
@@ -131,8 +131,8 @@ enum UISnapshots {
                 usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true),
                               "codex": limit(0, plan: "plus", resetsInMinutes: -5),
                               "antigravity": limit(5, plan: "Google AI Pro")],
-                installedAgents: allInstalled,
-                runningAgentIDs: ["claude-code", "codex", "antigravity"],
+                installedAgents: allInstalled + [("gemini", "Gemini")],
+                runningAgentIDs: ["claude-code", "codex", "antigravity", "gemini"],
                 todayCost: SessionCost(dollars: 18.15), costHistory: history,
                 currency: ("INR", 95.3))
         }
