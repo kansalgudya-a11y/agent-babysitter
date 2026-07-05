@@ -266,11 +266,6 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: "welcomeDismissed")
     }
 
-    func resetWelcome() {
-        welcomeDismissed = false
-        UserDefaults.standard.set(false, forKey: "welcomeDismissed")
-    }
-
     func dismiss(_ row: SessionRow) {
         let store = store
         Task {

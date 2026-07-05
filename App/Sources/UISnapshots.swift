@@ -8,6 +8,15 @@ import AgentBabysitterCore
 @MainActor
 enum UISnapshots {
 
+    /// Fixture prefs go into the volatile argument domain: they override
+    /// disk for this process only and are never written back — QA runs on a
+    /// dev machine must not corrupt that user's real settings.
+    static func setFixturePref(_ value: Any, forKey key: String) {
+        var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        domain[key] = value
+        UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
+    }
+
     static func runIfRequested() {
         guard let flagIndex = CommandLine.arguments.firstIndex(of: "--ui-snapshots"),
               CommandLine.arguments.count > flagIndex + 1 else { return }
@@ -51,6 +60,10 @@ enum UISnapshots {
 
         func menu(_ name: String, showAll: Bool = false,
                   _ configure: (AppModel) -> Void) {
+            // Pin every pref a fixture depends on - renders must not vary
+            // with the dev machine's real settings.
+            setFixturePref(false, forKey: "showAllLimits")
+            setFixturePref(false, forKey: "claudeUsageMeterEnabled")
             let model = AppModel()
             configure(model)
             results.append((name, AnyView(MenuContent(model: model,
@@ -205,7 +218,7 @@ enum UISnapshots {
                         AnyView(StatsView(model: singleDayModel, initialRange: .allTime))))
 
         // Welcome tour as an updater would see it (floor 0.2.1 -> newer badged).
-        UserDefaults.standard.set("0.2.1", forKey: "lastSeenGuideVersion")
+        setFixturePref("0.2.1", forKey: "lastSeenGuideVersion")
         let welcomeModel = AppModel()
         welcomeModel.applyFixture(
             rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
@@ -222,6 +235,12 @@ enum UISnapshots {
                 MenuBarLabel(summary: .init(worstState: .waitingForInput, activeCount: 2),
                              limitDanger: true)
                 MenuBarLabel(summary: .init(worstState: nil, activeCount: 0), limitDanger: true)
+                MenuBarLabel(summary: .init(worstState: .working, activeCount: 2),
+                             style: "cost", costToday: 317.65)
+                MenuBarLabel(summary: .init(worstState: .working, activeCount: 2),
+                             style: "limit", costToday: 0, hottestLimit: 43)
+                MenuBarLabel(summary: .init(worstState: .waitingForInput, activeCount: 1),
+                             limitDanger: true, style: "limit", hottestLimit: 94)
             }
             .padding(8))))
 
