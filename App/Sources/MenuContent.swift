@@ -53,7 +53,7 @@ struct MenuContent: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
             }
-            ForEach(model.unreadableAgents, id: \.id) { agent in
+            ForEach(model.unreadableAgents) { agent in
                 Label("\(agent.name) is running but its data format looks new — try updating Agent Babysitter.",
                       systemImage: "exclamationmark.triangle")
                     .font(.caption)

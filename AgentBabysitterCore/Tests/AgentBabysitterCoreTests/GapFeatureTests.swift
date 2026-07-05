@@ -81,6 +81,39 @@ final class CostBudgetPlannerTests: XCTestCase {
     }
 }
 
+final class StatsLedgerSumTests: XCTestCase {
+    func testCrossMachineSumsPerDay() {
+        // Each machine's file holds its own totals; the household view sums.
+        let macA = StatsLedger.Ledger(
+            costByAgent: ["2026-07-06": ["claude-code": 50]],
+            costByProject: ["2026-07-06": ["web": 30]],
+            sessionCounts: ["2026-07-06": 3], activeMinutes: ["2026-07-06": 40])
+        let macB = StatsLedger.Ledger(
+            costByAgent: ["2026-07-06": ["claude-code": 30, "codex": 10]],
+            costByProject: ["2026-07-06": ["web": 20]],
+            sessionCounts: ["2026-07-06": 2], activeMinutes: ["2026-07-06": 25])
+        let sum = StatsLedger.summed([macA, macB])
+        XCTAssertEqual(sum.costByAgent["2026-07-06"], ["claude-code": 80, "codex": 10]) // sum, not max
+        XCTAssertEqual(sum.costByProject["2026-07-06"], ["web": 50])
+        XCTAssertEqual(sum.sessionCounts["2026-07-06"], 5)
+        XCTAssertEqual(sum.activeMinutes["2026-07-06"], 65)
+    }
+}
+
+final class AgentHealthExclusionTests: XCTestCase {
+    // Documents the invariant the app-layer relies on: activity-based agents
+    // are excluded from the check (0 parsed is normal for them), and hidden
+    // sessions still count (tracked, not visible-row, is the input).
+    func testHealthOnlyFlagsGenuinelyUnreadable() {
+        // A file-based agent running + writing + zero tracked sessions.
+        XCTAssertEqual(AgentHealth.status(running: true, dataRecentlyModified: true,
+                                          sessionsParsed: 0), .cannotRead)
+        // Same agent but with a tracked (possibly hidden) session → ok.
+        XCTAssertEqual(AgentHealth.status(running: true, dataRecentlyModified: true,
+                                          sessionsParsed: 1), .ok)
+    }
+}
+
 final class StatsLedgerMergeTests: XCTestCase {
     func testMergesByMaxPerDay() {
         let a = StatsLedger.Ledger(

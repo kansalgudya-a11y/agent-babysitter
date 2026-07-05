@@ -25,9 +25,33 @@ public enum StatsLedger {
         }
     }
 
-    /// Combine two ledgers (e.g. this Mac's and a sibling Mac's synced copy)
-    /// by taking the max per day — cost and counts only ever grow within a
-    /// day, so max is the right, conflict-free merge. Session-id sets union.
+    /// Cross-machine total: SUM per day across distinct machines' ledgers.
+    /// Each machine's file already holds its own per-day totals, so summing
+    /// gives the household figure (max would only surface the busiest Mac).
+    /// Used for the merged DISPLAY view only — never written back to a
+    /// machine's own ledger (which stays this-machine-only).
+    public static func summed(_ ledgers: [Ledger]) -> Ledger {
+        func addNested(_ into: inout [String: [String: Double]],
+                       _ from: [String: [String: Double]]) {
+            for (day, inner) in from {
+                var row = into[day] ?? [:]
+                for (key, value) in inner { row[key, default: 0] += value }
+                into[day] = row
+            }
+        }
+        var out = Ledger()
+        for ledger in ledgers {
+            addNested(&out.costByAgent, ledger.costByAgent)
+            addNested(&out.costByProject, ledger.costByProject)
+            for (day, n) in ledger.sessionCounts { out.sessionCounts[day, default: 0] += n }
+            for (day, m) in ledger.activeMinutes { out.activeMinutes[day, default: 0] += m }
+        }
+        return out
+    }
+
+    /// Combine two ledgers by taking the max per day — used WITHIN one machine
+    /// over time (cost/counts only grow within a day, so max guards against
+    /// dips when sessions prune). Session-id sets union.
     public static func merged(_ a: Ledger, _ b: Ledger) -> Ledger {
         func mergeNested(_ x: [String: [String: Double]],
                          _ y: [String: [String: Double]]) -> [String: [String: Double]] {

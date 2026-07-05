@@ -368,6 +368,18 @@ public actor SessionStore {
         Set(latestProcessesByAdapter.filter { !$0.value.isEmpty }.keys)
     }
 
+    /// How many sessions we currently track per agent — INCLUDING ones hidden
+    /// from the row list. The drift check uses this (not visible rows) so an
+    /// agent whose sessions are merely auto-hidden isn't mistaken for one we
+    /// can no longer read.
+    public func trackedSessionCounts() -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for (_, tracked) in sessions where !tracked.reader.isSidechain {
+            counts[tracked.adapter.id, default: 0] += 1
+        }
+        return counts
+    }
+
     private var cursorUsageCache: (mtime: Date, usage: UsageLimitSnapshot?)?
 
     /// Same mtime-cached copy-and-read as Antigravity below; Cursor's db is

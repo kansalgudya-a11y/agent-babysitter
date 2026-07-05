@@ -5,6 +5,12 @@ import AgentBabysitterCore
 
 /// Main-actor view model: owns the store and watchers, republishes their
 /// state for SwiftUI. All heavy lifting stays in AgentBabysitterCore.
+/// An installed agent whose data we've lost the ability to read.
+struct UnreadableAgent: Identifiable, Equatable {
+    let id: String
+    let name: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
 
@@ -73,7 +79,7 @@ final class AppModel: ObservableObject {
     }
     /// Session history (finished sessions) + agents we can no longer read.
     @Published private(set) var sessionHistory: [SessionHistoryEntry] = []
-    @Published private(set) var unreadableAgents: [(id: String, name: String)] = []
+    @Published private(set) var unreadableAgents: [UnreadableAgent] = []
     /// ISO code of the display currency. USD (default) needs no rate and no
     /// network; picking another fetches its rate.
     @Published var currencyCode: String {
@@ -361,6 +367,12 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Whether banners should be held right now for the user's quiet hours.
+    var isQuietNow: Bool {
+        quietHoursEnabled && QuietHours.isQuiet(
+            now: Date(), startHour: quietStartHour, endHour: quietEndHour)
+    }
+
     private func runUpdateCheckIfDue() async {
         let defaults = UserDefaults.standard
         let last = defaults.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
@@ -369,8 +381,10 @@ final class AppModel: ObservableObject {
         await updateChecker.check()
         guard case .available(let version, let url) = updateChecker.status else { return }
         // Announce each new version once; don't re-nag daily for one the user
-        // has already been told about.
-        guard defaults.string(forKey: "lastNotifiedUpdateVersion") != version else { return }
+        // has already been told about. Hold the banner during quiet hours —
+        // leaving it un-notified so a later check delivers it.
+        guard defaults.string(forKey: "lastNotifiedUpdateVersion") != version, !isQuietNow
+        else { return }
         defaults.set(version, forKey: "lastNotifiedUpdateVersion")
         notificationManager.deliverUpdateAvailable(version: version, url: url)
     }
@@ -684,9 +698,7 @@ final class AppModel: ObservableObject {
         self.todayCost = todayCost
 
         // Quiet hours silence every banner (the menu still updates live).
-        let quiet = quietHoursEnabled && QuietHours.isQuiet(
-            now: Date(), startHour: quietStartHour, endHour: quietEndHour)
-        guard !quiet else { return }
+        guard !isQuietNow else { return }
         deliverLimitAlerts(usageLimits)
         deliverBudgetAlerts(todayCost.dollars)
         for agent in unreadableAgents where notifiedUnreadable.insert(agent.id).inserted {
@@ -738,7 +750,9 @@ final class AppModel: ObservableObject {
         let todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
         var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
 
-        var ledger = StatsLedger.ticked(
+        // This machine's own ledger — always persisted locally as-is (never
+        // overwritten with cross-machine data).
+        let ledger = StatsLedger.ticked(
             .init(costByAgent: byAgent, costByProject: byProject, sessionCounts: counts,
                   todaySessionIDs: Set(todaySeen[today] ?? []),
                   activeMinutes: activeMinutes),
@@ -749,10 +763,12 @@ final class AppModel: ObservableObject {
             anyWorking: anyWorking,
             secondsSinceLastTick: sinceCredit)
 
-        // Fold in any sibling Macs' synced ledgers so stats are cross-machine.
+        // Publish this machine's data to iCloud (own file, gated on change);
+        // the DISPLAY ledger sums in siblings but is never persisted back.
+        var displayLedger = ledger
         if syncStatsViaICloud {
-            ledger = StatsSync.mergedWithSiblings(ledger)
-            StatsSync.write(ledger)
+            StatsSync.writeIfChanged(ledger)
+            displayLedger = StatsSync.summedWithSiblings(ledger)
         }
 
         if ledger.costByAgent != byAgent {
@@ -770,19 +786,24 @@ final class AppModel: ObservableObject {
         if ledger.activeMinutes != activeMinutes {
             defaults.set(ledger.activeMinutes, forKey: "activeMinutes")
         }
-        byAgent = ledger.costByAgent
-        byProject = ledger.costByProject
-        counts = ledger.sessionCounts
-        activeMinutes = ledger.activeMinutes
+        // The stats window reflects the DISPLAY ledger (this Mac, or the
+        // cross-machine sum when sync is on) — not necessarily what's on disk.
+        let showAgent = displayLedger.costByAgent
+        let showProject = displayLedger.costByProject
+        let showCounts = displayLedger.sessionCounts
+        let showMinutes = displayLedger.activeMinutes
 
         let costTotals = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
         statsDays = DailyCostHistory.series(costTotals).map { entry in
             let key = DailyCostHistory.key(for: entry.day)
-            return DayStat(day: entry.day, dollars: entry.dollars,
-                           byAgent: byAgent[key] ?? [:],
-                           byProject: byProject[key] ?? [:],
-                           activeMinutes: activeMinutes[key] ?? 0,
-                           sessions: counts[key] ?? 0)
+            let dayDollars = syncStatsViaICloud
+                ? (showAgent[key]?.values.reduce(0, +) ?? entry.dollars)
+                : entry.dollars
+            return DayStat(day: entry.day, dollars: dayDollars,
+                           byAgent: showAgent[key] ?? [:],
+                           byProject: showProject[key] ?? [:],
+                           activeMinutes: showMinutes[key] ?? 0,
+                           sessions: showCounts[key] ?? 0)
         }
     }
 
@@ -870,25 +891,40 @@ final class AppModel: ObservableObject {
 
     // MARK: - Agent-drift health
 
+    private var lastHealthCheck = Date.distantPast
+    private var lastHealthResult: [UnreadableAgent] = []
+
     /// An installed+running agent whose data files are churning but yields no
-    /// readable sessions — likely a format change we can't parse. Surfaced as
+    /// tracked sessions — likely a format change we can't parse. Surfaced as
     /// a menu warning so the promise ("I watch your agents") fails loudly.
-    private func computeUnreadableAgents(rows: [SessionRow]) async -> [(id: String, name: String)] {
+    ///
+    /// Guards against false alarms: (1) counts TRACKED sessions incl. hidden
+    /// (an auto-hidden session isn't "unreadable"); (2) skips activity-based
+    /// agents (Antigravity/Gemini/Manus) — they have no turns to parse, so
+    /// "zero parsed" is normal, not drift; (3) throttled to ~30s since the
+    /// directory scan isn't cheap.
+    private func computeUnreadableAgents(rows: [SessionRow]) async -> [UnreadableAgent] {
+        let now = Date()
+        guard now.timeIntervalSince(lastHealthCheck) >= 30 else { return lastHealthResult }
+        lastHealthCheck = now
         let running = runningAgentIDs
-        let readByAgent = Dictionary(grouping: rows, by: \.agentID).mapValues(\.count)
-        var flagged: [(id: String, name: String)] = []
-        for adapter in adapters where running.contains(adapter.id) {
+        let tracked = await store.trackedSessionCounts()
+        var flagged: [UnreadableAgent] = []
+        for adapter in adapters
+        where running.contains(adapter.id) && !adapter.isActivityBased {
             let recent = Self.dataRecentlyModified(adapter.transcriptRoot)
             if AgentHealth.status(running: true, dataRecentlyModified: recent,
-                                  sessionsParsed: readByAgent[adapter.id] ?? 0) == .cannotRead {
-                flagged.append((id: adapter.id, name: adapter.displayName))
+                                  sessionsParsed: tracked[adapter.id] ?? 0) == .cannotRead {
+                flagged.append(UnreadableAgent(id: adapter.id, name: adapter.displayName))
             }
         }
+        lastHealthResult = flagged
         return flagged
     }
 
     /// True when the data root (or an immediate child) was written in the last
-    /// ~10 minutes — evidence the agent is actively producing data.
+    /// ~10 minutes — evidence the agent is actively producing data. Child scan
+    /// is capped so a huge data dir can't stall the check.
     private static func dataRecentlyModified(_ root: URL) -> Bool {
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-600)
@@ -897,8 +933,9 @@ final class AppModel: ObservableObject {
                 .contentModificationDate ?? .distantPast
         }
         if mtime(root) > cutoff { return true }
-        let children = (try? fm.contentsOfDirectory(at: root,
-            includingPropertiesForKeys: [.contentModificationDateKey], options: [])) ?? []
+        let children = ((try? fm.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey], options: [])) ?? [])
+            .prefix(200)
         return children.contains { mtime($0) > cutoff }
     }
 
