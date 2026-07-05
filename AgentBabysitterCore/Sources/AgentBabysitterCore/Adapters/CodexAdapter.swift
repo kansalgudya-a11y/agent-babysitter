@@ -10,6 +10,7 @@ public struct CodexAdapter: AgentAdapter {
     public let displayName = "Codex"
     public let transcriptRoot: URL
     public let focusBundleIdentifiers = ["com.openai.codex"]
+    public let cliExecutableNames = ["codex"]
 
     public init(transcriptRoot: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".codex/sessions")) {

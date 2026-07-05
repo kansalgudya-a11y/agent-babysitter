@@ -54,6 +54,7 @@ public struct AntigravityAdapter: AgentAdapter {
     public var id: String { surface.rawValue }
     public var displayName: String { surface.displayName }
     public var focusBundleIdentifiers: [String] { surface.bundleIdentifiers }
+    public var cliExecutableNames: [String] { surface == .cli ? ["agy"] : [] }
 
     public init(surface: Surface,
                 geminiRoot: URL = FileManager.default.homeDirectoryForCurrentUser

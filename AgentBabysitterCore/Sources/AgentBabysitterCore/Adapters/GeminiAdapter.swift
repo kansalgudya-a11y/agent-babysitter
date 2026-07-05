@@ -39,6 +39,7 @@ public struct GeminiAdapter: AgentAdapter {
     public var id: String { surface.rawValue }
     public var displayName: String { surface.displayName }
     public var focusBundleIdentifiers: [String] { surface.bundleIdentifiers }
+    public var cliExecutableNames: [String] { surface == .cli ? ["gemini"] : [] }
     public var isActivityBased: Bool { true }
     public var usesNetworkActivity: Bool { surface == .desktop }
 

@@ -122,7 +122,12 @@ struct MenuContent: View {
         let order = ["claude-code": 0, "codex": 1,
                      "antigravity": 2, "antigravity-ide": 3, "antigravity-cli": 4,
                      "gemini": 5, "gemini-cli": 6, "cursor": 7, "manus": 8]
-        return Dictionary(grouping: model.rows, by: \.agentID)
+        // Never show activity for an app that isn't installed (a running
+        // session is always counted as installed, so this can't hide a live
+        // one — only stale rows from an uninstalled app).
+        let installed = Set(model.installedAgents.map(\.id))
+        return Dictionary(grouping: model.rows.filter { installed.contains($0.agentID) },
+                          by: \.agentID)
             .sorted { (order[$0.key] ?? 99, $0.key) < (order[$1.key] ?? 99, $1.key) }
             .map { (agentID: $0.key,
                     agentName: $0.value.first?.agentName ?? $0.key,

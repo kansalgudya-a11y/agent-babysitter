@@ -464,8 +464,13 @@ final class AppModel: ObservableObject {
         self.rows = rows
         self.usageLimits = usageLimits
         self.runningAgentIDs = await store.runningAgentIDs()
+        // "Installed" = the app bundle is registered or the CLI is on PATH.
+        // A live/running agent always counts too, so an actual session can
+        // never be hidden by a detection miss. Uninstalled apps never appear.
+        let installedIDs = AgentInstallDetector.installedIDs(among: adapters)
+            .union(runningAgentIDs)
         self.installedAgents = adapters
-            .filter { FileManager.default.fileExists(atPath: $0.transcriptRoot.path) }
+            .filter { installedIDs.contains($0.id) }
             .map { (id: $0.id, name: $0.displayName) }
         // Mirror for support/debugging - written only when changed; the 2s
         // tick must not churn plists all day.

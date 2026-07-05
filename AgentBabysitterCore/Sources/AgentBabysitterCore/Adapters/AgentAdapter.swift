@@ -27,8 +27,13 @@ public protocol AgentAdapter: Sendable {
     var displayName: String { get }
     var transcriptRoot: URL { get }
     /// App bundle ids to activate when focusing a session of this agent
-    /// (tried before the pid-ancestry walk).
+    /// (tried before the pid-ancestry walk). Also the install signal for
+    /// desktop surfaces: present in LaunchServices == installed.
     var focusBundleIdentifiers: [String] { get }
+    /// CLI executables this surface ships as (e.g. "claude", "agy"). The
+    /// install signal for CLI surfaces: found on the login shell PATH ==
+    /// installed. Empty for desktop-only surfaces.
+    var cliExecutableNames: [String] { get }
 
     /// Launch scan: transcript files modified within `maxAge`.
     func recentTranscripts(maxAge: TimeInterval, now: Date) -> [SessionFileInfo]
@@ -87,6 +92,8 @@ public extension AgentAdapter {
 
     var isActivityBased: Bool { false }
 
+    var cliExecutableNames: [String] { [] }
+
     var usesNetworkActivity: Bool { false }
 
     var multiSessionFiles: Bool { false }
@@ -103,6 +110,7 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     public let displayName = "Claude Code"
     public let transcriptRoot: URL
     public let focusBundleIdentifiers = ["com.anthropic.claudefordesktop"]
+    public let cliExecutableNames = ["claude"]
 
     public init(transcriptRoot: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/projects")) {
