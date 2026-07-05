@@ -4,6 +4,27 @@ macOS menu bar app that monitors running coding-agent sessions (Claude Code, Cod
 waiting for you / done / stalled / ended — with native notifications and live
 per-session token cost. No network calls, no telemetry.
 
+## What it looks like
+
+| The menu | Limits & forecasting |
+|---|---|
+| ![Sessions at a glance](docs/screenshots/menu.png) | ![Limits with pace forecasting](docs/screenshots/limits-forecasting.png) |
+
+| Your stats | The feature tour |
+|---|---|
+| ![Stats window](docs/screenshots/stats.png) | ![Feature tour](docs/screenshots/tour.png) |
+
+*(Screenshots come from the app's own snapshot harness — always current.)*
+
+## Zero setup
+
+Download, open, done. The app finds every installed agent by itself —
+Claude Code, Codex, Antigravity, and Gemini, desktop apps and CLIs alike —
+and populates sessions, costs, and limits from their own files with no
+configuration, no accounts, and no network. Optional extras are one clearly
+labeled toggle each; nothing changes without that click, and every change
+is fully reversible.
+
 ## Layout
 
 - `AgentBabysitterCore/` — Swift package with all logic (transcript parser,

@@ -301,6 +301,22 @@ struct MenuContent: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(limitAccessibilityLabel(entry))
+    }
+
+    private func limitAccessibilityLabel(
+        _ entry: (id: String, name: String, limit: UsageLimitSnapshot?, running: Bool)
+    ) -> String {
+        guard let limit = entry.limit else { return "\(entry.name), no usage data" }
+        if let used = UsageForecast.estimatedCurrentPercent(limit) ?? limit.usedPercent {
+            var text = "\(entry.name), \(Int(used)) percent of the five hour window used"
+            if let resets = limit.resetsAt, resets > Date() {
+                text += ", resets in \(Int(resets.timeIntervalSinceNow / 60)) minutes"
+            }
+            return text
+        }
+        return "\(entry.name), \(limit.plan ?? "plan") plan"
     }
 
     /// "resets in 2h 22m · week 23%" — whatever parts are known. Only the
@@ -401,11 +417,14 @@ struct MenuContent: View {
             }
             .buttonStyle(.borderless)
             .help("This week's stats")
+            .accessibilityLabel("Statistics")
             Button {
                 model.notificationsMuted.toggle()
             } label: {
                 Image(systemName: model.notificationsMuted ? "bell.slash" : "bell")
             }
+            .accessibilityLabel(model.notificationsMuted ? "Alerts paused, click to resume"
+                                                         : "Pause alerts")
             .buttonStyle(.borderless)
             .help(model.notificationsMuted ? "Alerts are off — click to turn back on"
                                            : "Pause all alerts")
@@ -528,6 +547,10 @@ struct SessionRowView: View {
                     in: RoundedRectangle(cornerRadius: 6))
         .onHover { hovering = $0 }
         .help("Click to jump to this session")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(row.projectName), \(row.state.label)"
+            + (row.cost.dollars > 0 ? ", about \(Int(row.cost.dollars)) dollars" : ""))
+        .accessibilityHint("Jumps to this session")
         .contextMenu {
             if let url = row.transcriptURL {
                 Button("Reveal Session Log in Finder") {

@@ -7,8 +7,15 @@ import AgentBabysitterCore
 @MainActor
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
-    /// Looks up the current row for a session when a notification is clicked.
-    var rowProvider: (@MainActor (String) -> SessionRow?)?
+    /// Looks up the current row for a session when a notification is
+    /// clicked - async so it can reach sessions the auto-hide tidied away.
+    var rowProvider: (@MainActor (String) async -> SessionRow?)?
+
+    /// Rows that left the list take their delivered banners along.
+    func removeDelivered(sessionIDs: [String]) {
+        center.removeDeliveredNotifications(
+            withIdentifiers: sessionIDs.map { "session-\($0)" })
+    }
 
     private let center = UNUserNotificationCenter.current()
     private var authorizationRequested = false
@@ -143,7 +150,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
         guard let sessionID else { return }
         Task { @MainActor in
-            if let row = self.rowProvider?(sessionID) {
+            if let row = await self.rowProvider?(sessionID) {
                 TerminalFocuser.focusSession(row)
             }
         }

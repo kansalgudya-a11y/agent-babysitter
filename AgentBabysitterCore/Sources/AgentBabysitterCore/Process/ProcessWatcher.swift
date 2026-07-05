@@ -82,6 +82,9 @@ public actor ProcessWatcher {
     private let scanner: any ProcessScanning
     private let adapters: [any AgentAdapter]
     private let interval: Duration
+    /// Idle multiplier: when nothing is happening the scan slows down —
+    /// ps/lsof every 5s all night is pure battery drain. Set via setPace.
+    private var idle = false
     private var pollTask: Task<Void, Never>?
     private var handler: (@Sendable (Update) -> Void)?
 
@@ -101,9 +104,14 @@ public actor ProcessWatcher {
         pollTask = Task {
             while !Task.isCancelled {
                 await pollOnce()
-                try? await Task.sleep(for: interval)
+                try? await Task.sleep(for: idle ? interval * 6 : interval)
             }
         }
+    }
+
+    /// fast = agents active or recently active; slow (6x interval) when quiet.
+    public func setPace(fast: Bool) {
+        idle = !fast
     }
 
     public func stop() {

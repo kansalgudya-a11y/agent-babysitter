@@ -50,6 +50,7 @@ struct MenuBarLabel: View {
         // ⚠️ prefixes everything when any usage window is at 90%+ — the
         // babysitter's job is exactly this warning.
         let warning = limitDanger ? "⚠️ " : ""
+        Group {
         switch style {
         case "cost" where costToday > 0:
             Text("\(warning)\(dot)$\(costToday, specifier: "%.0f")")
@@ -62,6 +63,19 @@ struct MenuBarLabel: View {
         default:
             statusLabel
         }
+        }
+        .accessibilityLabel(a11yDescription)
+    }
+
+    private var a11yDescription: String {
+        var parts: [String] = []
+        if summary.activeCount > 0, let state = summary.worstState {
+            parts.append("\(summary.activeCount) agent sessions, worst state \(state.label)")
+        } else {
+            parts.append("no active agent sessions")
+        }
+        if limitDanger { parts.append("a usage limit is above 90 percent") }
+        return "Agent Babysitter: " + parts.joined(separator: ", ")
     }
 
     /// The worst state's dot, kept in every style so "needs you" is never

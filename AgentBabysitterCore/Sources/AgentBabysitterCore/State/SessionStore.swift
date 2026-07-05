@@ -191,31 +191,14 @@ public actor SessionStore {
 
     // MARK: - Output
 
-    public func rows(at now: Date = Date()) -> [SessionRow] {
+    public func rows(at now: Date = Date(),
+                     includeHidden: Bool = false) -> [SessionRow] {
         prune(at: now)
         var rows: [SessionRow] = []
         for (_, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
             if let dismissedAfter = tracked.dismissedAfter,
                (tracked.reader.lastGrowthAt ?? .distantPast) <= dismissedAfter {
                 continue
-            }
-            // Finished sessions tidy themselves away after a while; a new
-            // write revives the row (state re-derives every refresh).
-            if let hideAfter = configuration.doneAutoHide {
-                let quietSince = tracked.reader.lastGrowthAt ?? .distantPast
-                let stateNow = SessionStateEngine.evaluate(
-                    SessionSignals(processAlive: tracked.pid != nil,
-                                   lastGrowthAt: tracked.reader.lastGrowthAt,
-                                   turnPhase: tracked.reader.turnPhase,
-                                   hasPendingToolUses: tracked.reader.hasPendingToolUses,
-                                   latestHookEvent: tracked.latestHookSignal,
-                                   precisionModeEnabled: configuration.precisionModeEnabled),
-                    at: now, stallThreshold: configuration.stallThreshold,
-                    workingWindow: configuration.workingWindow)
-                if (stateNow == .done || stateNow == .ended),
-                   now.timeIntervalSince(quietSince) > hideAfter {
-                    continue
-                }
             }
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,
@@ -227,6 +210,15 @@ public actor SessionStore {
             let state = SessionStateEngine.evaluate(signals, at: now,
                                                     stallThreshold: configuration.stallThreshold,
                                                     workingWindow: configuration.workingWindow)
+            // Finished sessions tidy themselves away after a while; a new
+            // write revives the row (state re-derives every refresh).
+            // includeHidden serves lookups that must reach them anyway,
+            // like clicking an older notification.
+            if !includeHidden, let hideAfter = configuration.doneAutoHide,
+               state == .done || state == .ended,
+               now.timeIntervalSince(tracked.reader.lastGrowthAt ?? .distantPast) > hideAfter {
+                continue
+            }
             let cwd = tracked.reader.lastKnownCWD
             rows.append(SessionRow(
                 id: tracked.reader.sessionID,

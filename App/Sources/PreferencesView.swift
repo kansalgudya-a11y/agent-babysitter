@@ -41,8 +41,15 @@ struct PreferencesView: View {
             Section("General") {
                 Toggle("Start Agent Babysitter when I log in", isOn: $model.launchAtLogin)
                 Toggle(isOn: $model.hotKeyEnabled) {
-                    Text("Jump to the neediest session with ⌥⌘B")
+                    Text("Jump to the neediest session with a hotkey")
                     Text("From anywhere: focuses the session that's waiting for you (or stuck, or working).")
+                }
+                if model.hotKeyEnabled {
+                    Picker("Hotkey", selection: $model.hotKeyCombo) {
+                        ForEach(HotKeyManager.combos, id: \.id) { combo in
+                            Text(combo.label).tag(combo.id)
+                        }
+                    }
                 }
                 Picker("Hide finished sessions after", selection: $model.doneAutoHideMinutes) {
                     Text("5 minutes").tag(5.0)

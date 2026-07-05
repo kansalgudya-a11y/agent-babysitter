@@ -266,3 +266,30 @@ final class DoneAutoHideTests: XCTestCase {
         XCTAssertEqual(generous.count, 1, "still inside a 1h window")
     }
 }
+
+final class StatsLedgerTests: XCTestCase {
+
+    func testMaxMergeAndSessionCounting() {
+        var ledger = StatsLedger.Ledger()
+        ledger = StatsLedger.ticked(ledger, todayKey: "2026-07-05",
+                                    todayCostByAgent: ["claude-code": 10],
+                                    visibleSessionIDs: ["a", "b"],
+                                    anyWorking: true, secondsSinceLastTick: 2)
+        ledger = StatsLedger.ticked(ledger, todayKey: "2026-07-05",
+                                    todayCostByAgent: ["claude-code": 7],  // prune dip
+                                    visibleSessionIDs: ["b", "c"],
+                                    anyWorking: false, secondsSinceLastTick: 2)
+        XCTAssertEqual(ledger.costByAgent["2026-07-05"]?["claude-code"], 10)
+        XCTAssertEqual(ledger.sessionCounts["2026-07-05"], 3)
+        XCTAssertEqual(ledger.activeMinutes["2026-07-05"] ?? 0, 2.0 / 60, accuracy: 0.001)
+    }
+
+    func testSleepWakeGapIsCapped() {
+        let ledger = StatsLedger.ticked(.init(), todayKey: "d",
+                                        todayCostByAgent: [:],
+                                        visibleSessionIDs: [],
+                                        anyWorking: true,
+                                        secondsSinceLastTick: 8 * 3600)
+        XCTAssertEqual(ledger.activeMinutes["d"], 1, "an 8h gap credits at most one minute")
+    }
+}

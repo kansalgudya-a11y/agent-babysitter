@@ -104,9 +104,15 @@ struct StatsView: View {
                     }
                 }
             }
-            Text("Everything above is computed on this Mac from your agents' own files, since the day Agent Babysitter was installed. Nothing is sent anywhere.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            HStack(alignment: .bottom) {
+                Text("Everything above is computed on this Mac from your agents' own files, since the day Agent Babysitter was installed. Nothing is sent anywhere.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button("Export CSV…") { exportCSV() }
+                    .controlSize(.small)
+                    .help("Saves every recorded day: date, cost, active minutes, sessions, and per-agent dollars.")
+            }
         }
         .padding(20)
         .frame(width: 460, alignment: .topLeading)
@@ -229,6 +235,25 @@ struct StatsView: View {
     private var hoursWorked: String {
         let minutes = Int(selectedDays.reduce(0) { $0 + $1.activeMinutes })
         return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes)m"
+    }
+
+    private func exportCSV() {
+        let agents = Array(Set(model.statsDays.flatMap { $0.byAgent.keys })).sorted()
+        var csv = "date,total_dollars,active_minutes,sessions"
+            + agents.map { ",\($0)_dollars" }.joined() + "\n"
+        for day in model.statsDays {
+            csv += "\(DailyCostHistory.key(for: day.day)),"
+                + "\(String(format: "%.2f", day.dollars)),"
+                + "\(String(format: "%.1f", day.activeMinutes)),\(day.sessions)"
+                + agents.map { ",\(String(format: "%.2f", day.byAgent[$0] ?? 0))" }.joined()
+                + "\n"
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "agent-babysitter-stats.csv"
+        panel.allowedContentTypes = [.commaSeparatedText]
+        if panel.runModal() == .OK, let url = panel.url {
+            try? csv.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     private var totalCost: String {

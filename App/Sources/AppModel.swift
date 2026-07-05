@@ -84,6 +84,12 @@ final class AppModel: ObservableObject {
             applyHotKey()
         }
     }
+    @Published var hotKeyCombo: String {
+        didSet {
+            UserDefaults.standard.set(hotKeyCombo, forKey: "hotKeyCombo")
+            applyHotKey()
+        }
+    }
     /// What the menu bar icon shows: "status", "cost", or "limit".
     @Published var menuBarStyle: String {
         didSet { UserDefaults.standard.set(menuBarStyle, forKey: "menuBarStyle") }
@@ -138,10 +144,13 @@ final class AppModel: ObservableObject {
     /// Persisted so an app restart doesn't lose a still-valid reading.
     private var capturedUsage: [String: UsageLimitSnapshot] = [:] {
         didSet {
+            guard capturedUsage != oldValue else { return }
             let data = try? JSONEncoder().encode(capturedUsage)
             UserDefaults.standard.set(data, forKey: "capturedUsage")
         }
     }
+    private var lastDebugLimits: [String: String] = [:]
+    private var lastDebugAgents = ""
     /// Limit alerts fire once per window per agent; keyed by reset time and
     /// persisted so a relaunch doesn't re-alert the same window.
     private var alertedFiveHour: [String: Date] =
@@ -167,6 +176,7 @@ final class AppModel: ObservableObject {
                                      "limitAlertThreshold": 80.0,
                                      "hotKeyEnabled": true,
                                      "menuBarStyle": "status",
+                                     "hotKeyCombo": "opt-cmd-b",
                                      "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -189,6 +199,7 @@ final class AppModel: ObservableObject {
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
         hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
+        hotKeyCombo = defaults.string(forKey: "hotKeyCombo") ?? "opt-cmd-b" 
         menuBarStyle = defaults.string(forKey: "menuBarStyle") ?? "status"
         precisionModeEnabled = precision
         claudeUsageMeterEnabled = defaults.bool(forKey: "claudeUsageMeterEnabled")
@@ -204,7 +215,9 @@ final class AppModel: ObservableObject {
             markGuideSeen()
         }
         notificationManager.rowProvider = { [weak self] sessionID in
-            self?.rows.first { $0.id == sessionID }
+            // Through the store so clicks on older banners still reach
+            // sessions the auto-hide has tidied away.
+            await self?.store.rows(includeHidden: true).first { $0.id == sessionID }
         }
         hotKeyManager.target = { [weak self] in self?.neediestRow() }
         applyHotKey()
@@ -351,7 +364,11 @@ final class AppModel: ObservableObject {
         if !rows.isEmpty { lastRowsSeenAt = Date() }
         let quiet = rows.isEmpty && Date().timeIntervalSince(lastRowsSeenAt) > 120
         let desired: TimeInterval = quiet ? 30 : 2
-        if desired != refreshInterval { scheduleRefreshTimer(interval: desired) }
+        if desired != refreshInterval {
+            scheduleRefreshTimer(interval: desired)
+            let watcher = processWatcher
+            Task { await watcher.setPace(fast: !quiet) }
+        }
     }
 
     /// Watch an adapter root; used at start and when a root appears later
@@ -407,24 +424,36 @@ final class AppModel: ObservableObject {
         // status-line/hook meter, then opt-in live fetches — for the same
         // agent the newest capture wins. A captured % older than the whole
         // 5h window says nothing about the current window; drop it.
-        capturedUsage = capturedUsage.filter {
+        let liveCaptured = capturedUsage.filter {
             Date().timeIntervalSince($0.value.capturedAt) < 300 * 60
         }
+        if liveCaptured.count != capturedUsage.count { capturedUsage = liveCaptured }
         usageLimits = UsageLimitLayering.merged(base: usageLimits,
-                                                overlays: [capturedUsage, liveUsage])
+                                                overlays: [liveCaptured, liveUsage])
+        let departed = Set(self.rows.map(\.id)).subtracting(rows.map(\.id))
+        if !departed.isEmpty {
+            notificationManager.removeDelivered(sessionIDs: Array(departed))
+        }
         self.rows = rows
         self.usageLimits = usageLimits
         self.runningAgentIDs = await store.runningAgentIDs()
         self.installedAgents = adapters
             .filter { FileManager.default.fileExists(atPath: $0.transcriptRoot.path) }
             .map { (id: $0.id, name: $0.displayName) }
-        // Mirror for support/debugging: `defaults read app.agentbabysitter.AgentBabysitter debugUsageLimits`
-        UserDefaults.standard.set(
-            usageLimits.mapValues { "\($0.usedPercent.map { String(Int($0)) } ?? "-")% \($0.plan ?? "")" },
-            forKey: "debugUsageLimits")
-        UserDefaults.standard.set(
-            "installed: \(installedAgents.map(\.id).sorted().joined(separator: " ")) | running: \(runningAgentIDs.sorted().joined(separator: " "))",
-            forKey: "debugAgents")
+        // Mirror for support/debugging - written only when changed; the 2s
+        // tick must not churn plists all day.
+        let debugLimits = usageLimits.mapValues {
+            "\($0.usedPercent.map { String(Int($0)) } ?? "-")% \($0.plan ?? "")"
+        }
+        if debugLimits != lastDebugLimits {
+            lastDebugLimits = debugLimits
+            UserDefaults.standard.set(debugLimits, forKey: "debugUsageLimits")
+        }
+        let debugAgents = "installed: \(installedAgents.map(\.id).sorted().joined(separator: " ")) | running: \(runningAgentIDs.sorted().joined(separator: " "))"
+        if debugAgents != lastDebugAgents {
+            lastDebugAgents = debugAgents
+            UserDefaults.standard.set(debugAgents, forKey: "debugAgents")
+        }
         deliverLimitAlerts(usageLimits)
         recordCostHistory(todayCost.dollars)
         await recordStats(rows: rows)
@@ -452,43 +481,55 @@ final class AppModel: ObservableObject {
     /// stats window's data. Local-day keyed and kept indefinitely so the
     /// window can show a week, three months, or all time. Session ids are
     /// retained only for today (dedup); past days collapse to counts.
+    private var lastStatsTick = Date.distantPast
+    private var lastActiveCredit = Date()
+
     private func recordStats(rows: [SessionRow]) async {
+        // Bookkeeping every 30s is plenty; the charts show days.
+        let now = Date()
+        let anyWorking = rows.contains { $0.state == .working }
+        guard now.timeIntervalSince(lastStatsTick) >= 30 || statsDays.isEmpty else { return }
+        let sinceCredit = now.timeIntervalSince(lastActiveCredit)
+        lastStatsTick = now
+        lastActiveCredit = now
+
         let defaults = UserDefaults.standard
-        let today = DailyCostHistory.key(for: Date())
+        let today = DailyCostHistory.key(for: now)
 
         var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
-        let todayAgents = await store.todayCostByAgent()
-        var mergedToday = byAgent[today] ?? [:]
-        for (agent, dollars) in todayAgents {
-            mergedToday[agent] = max(mergedToday[agent] ?? 0, dollars)
-        }
-        byAgent[today] = mergedToday
-
         var counts = defaults.dictionary(forKey: "sessionCounts") as? [String: Int] ?? [:]
-        // One-time migration from the 7-day id-list format.
         if let legacy = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] {
             for (day, ids) in legacy where counts[day] == nil { counts[day] = ids.count }
             defaults.removeObject(forKey: "sessionsSeen")
         }
-        var todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
-        var todayIDs = Set(todaySeen[today] ?? [])
-        todayIDs.formUnion(rows.map(\.id))
-        todaySeen = [today: Array(todayIDs)]  // past days live in counts only
-        counts[today] = todayIDs.count
-
+        let todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
         var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
-        let tick = Date()
-        if rows.contains(where: { $0.state == .working }) {
-            // Cap a tick's credit so a sleep/wake gap doesn't award hours.
-            let delta = min(tick.timeIntervalSince(lastActiveTick), 60) / 60
-            activeMinutes[today, default: 0] += delta
-        }
-        lastActiveTick = tick
 
-        defaults.set(byAgent, forKey: "costByAgent")
-        defaults.set(counts, forKey: "sessionCounts")
-        defaults.set(todaySeen, forKey: "sessionsSeenToday")
-        defaults.set(activeMinutes, forKey: "activeMinutes")
+        let ledger = StatsLedger.ticked(
+            .init(costByAgent: byAgent, sessionCounts: counts,
+                  todaySessionIDs: Set(todaySeen[today] ?? []),
+                  activeMinutes: activeMinutes),
+            todayKey: today,
+            todayCostByAgent: await store.todayCostByAgent(),
+            visibleSessionIDs: rows.map(\.id),
+            anyWorking: anyWorking,
+            secondsSinceLastTick: sinceCredit)
+
+        if ledger.costByAgent != byAgent {
+            defaults.set(ledger.costByAgent, forKey: "costByAgent")
+        }
+        if ledger.sessionCounts != counts {
+            defaults.set(ledger.sessionCounts, forKey: "sessionCounts")
+        }
+        if Set(todaySeen[today] ?? []) != ledger.todaySessionIDs || todaySeen.count != 1 {
+            defaults.set([today: Array(ledger.todaySessionIDs)], forKey: "sessionsSeenToday")
+        }
+        if ledger.activeMinutes != activeMinutes {
+            defaults.set(ledger.activeMinutes, forKey: "activeMinutes")
+        }
+        byAgent = ledger.costByAgent
+        counts = ledger.sessionCounts
+        activeMinutes = ledger.activeMinutes
 
         let costTotals = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
         statsDays = DailyCostHistory.series(costTotals).map { entry in
@@ -506,6 +547,7 @@ final class AppModel: ObservableObject {
         let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
         let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars,
                                                keepDays: 3650)
+        guard updated != saved else { return }
         UserDefaults.standard.set(updated, forKey: "costHistory")
         costHistory = DailyCostHistory.series(updated)
     }
@@ -539,12 +581,16 @@ final class AppModel: ObservableObject {
                                              threshold: limitAlertThreshold,
                                              alertedFiveHour: alertedFiveHour,
                                              alertedWeekly: alertedWeekly)
-        alertedFiveHour = outcome.alertedFiveHour
-        alertedWeekly = outcome.alertedWeekly
-        UserDefaults.standard.set(alertedFiveHour.mapValues(\.timeIntervalSince1970),
-                                  forKey: "alertedFiveHour")
-        UserDefaults.standard.set(alertedWeekly.mapValues(\.timeIntervalSince1970),
-                                  forKey: "alertedWeekly")
+        if outcome.alertedFiveHour != alertedFiveHour {
+            alertedFiveHour = outcome.alertedFiveHour
+            UserDefaults.standard.set(alertedFiveHour.mapValues(\.timeIntervalSince1970),
+                                      forKey: "alertedFiveHour")
+        }
+        if outcome.alertedWeekly != alertedWeekly {
+            alertedWeekly = outcome.alertedWeekly
+            UserDefaults.standard.set(alertedWeekly.mapValues(\.timeIntervalSince1970),
+                                      forKey: "alertedWeekly")
+        }
         for alert in outcome.alerts {
             let name = installedAgents.first { $0.id == alert.agentID }?.name
                 ?? adapters.first { $0.id == alert.agentID }?.displayName ?? alert.agentID
@@ -649,7 +695,11 @@ final class AppModel: ObservableObject {
     }
 
     private func applyHotKey() {
-        if hotKeyEnabled { hotKeyManager.register() } else { hotKeyManager.unregister() }
+        if hotKeyEnabled {
+            hotKeyManager.register(comboID: hotKeyCombo)
+        } else {
+            hotKeyManager.unregister()
+        }
     }
 
     /// The row the hotkey should jump to: same priority as the menu list.

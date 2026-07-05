@@ -15,7 +15,20 @@ final class HotKeyManager {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
 
-    func register() {
+    /// The offered chords; a full key-recorder can come later.
+    static let combos: [(id: String, label: String, keyCode: UInt32, modifiers: UInt32)] = [
+        ("opt-cmd-b", "⌥⌘B", UInt32(kVK_ANSI_B), UInt32(optionKey | cmdKey)),
+        ("ctrl-opt-cmd-b", "⌃⌥⌘B", UInt32(kVK_ANSI_B), UInt32(controlKey | optionKey | cmdKey)),
+        ("opt-cmd-j", "⌥⌘J", UInt32(kVK_ANSI_J), UInt32(optionKey | cmdKey)),
+    ]
+
+    func register(comboID: String = "opt-cmd-b") {
+        unregister()
+        let combo = Self.combos.first { $0.id == comboID } ?? Self.combos[0]
+        registerChord(keyCode: combo.keyCode, modifiers: combo.modifiers)
+    }
+
+    private func registerChord(keyCode: UInt32, modifiers: UInt32) {
         guard hotKeyRef == nil else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
@@ -33,8 +46,7 @@ final class HotKeyManager {
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x4142_5359),  // "ABSY"
                                      id: 1)
-        RegisterEventHotKey(UInt32(kVK_ANSI_B),
-                            UInt32(optionKey | cmdKey),
+        RegisterEventHotKey(keyCode, modifiers,
                             hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 
