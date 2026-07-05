@@ -28,7 +28,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.agentbabysitter.AgentBabysitter
-        MARKETING_VERSION: 0.5.5
+        MARKETING_VERSION: 0.5.6
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic

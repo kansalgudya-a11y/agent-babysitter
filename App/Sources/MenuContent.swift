@@ -131,15 +131,25 @@ struct MenuContent: View {
 
     private var sessionList: some View {
         // Snapshot harness: ScrollView content doesn't reach ImageRenderer,
-        // so QA renders use the plain stack. Behavior in the app is unchanged.
+        // so QA renders use the plain stack. In the app the ScrollView gets
+        // an EXPLICIT height: with maxHeight it collapsed to zero on the
+        // popover's first layout (MenuBarExtra sizing quirk - the list only
+        // appeared after any control forced a re-layout).
         Group {
             if AppModel.isSnapshotMode {
                 sessionListContent
             } else {
                 ScrollView { sessionListContent }
-                    .frame(maxHeight: 380)
+                    .frame(height: estimatedListHeight)
             }
         }
+    }
+
+    /// Two-line session rows ≈44pt, group headers ≈26pt, list padding 12pt.
+    private var estimatedListHeight: CGFloat {
+        let rows = CGFloat(model.rows.count) * 44
+        let headers = CGFloat(groupedRows.count) * 26
+        return min(380, rows + headers + 12)
     }
 
     private var sessionListContent: some View {
