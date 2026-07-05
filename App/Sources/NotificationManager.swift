@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import UserNotifications
 import AgentBabysitterCore
 
@@ -88,6 +89,21 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                          content: content, trigger: nil))
     }
 
+    /// "Agent Babysitter 0.7.0 is available." Tapping it (or "Update now")
+    /// opens the release page to download the new build. One identifier so a
+    /// newer version replaces an older pending banner.
+    func deliverUpdateAvailable(version: String, url: URL) {
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        content.title = "Update available"
+        content.body = "Agent Babysitter \(version) is ready to install. Update now?"
+        content.userInfo = ["updateURL": url.absoluteString]
+        content.categoryIdentifier = "update"
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "update-available",
+                                         content: content, trigger: nil))
+    }
+
     /// Window name from its length, matching the menu's own labels.
     private static func windowLabel(minutes: Int) -> String {
         switch minutes {
@@ -138,8 +154,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         // Snooze action on session banners.
         let snooze = UNNotificationAction(identifier: "snooze10",
                                           title: "Remind me in 10 min")
+        // "Update now" opens the download; dismissing is "Later".
+        let updateNow = UNNotificationAction(identifier: "update-now", title: "Update now",
+                                             options: [.foreground])
         center.setNotificationCategories([
             UNNotificationCategory(identifier: "session-event", actions: [snooze],
+                                   intentIdentifiers: []),
+            UNNotificationCategory(identifier: "update", actions: [updateNow],
                                    intentIdentifiers: []),
         ])
     }
@@ -150,6 +171,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let request = response.notification.request
+        // Update banner: any tap (or "Update now") opens the download page;
+        // dismissing it is "Later".
+        if let urlString = request.content.userInfo["updateURL"] as? String,
+           response.actionIdentifier != UNNotificationDismissActionIdentifier,
+           let url = URL(string: urlString) {
+            completionHandler()
+            Task { @MainActor in NSWorkspace.shared.open(url) }
+            return
+        }
         let sessionID = request.content.userInfo["sessionID"] as? String
         if response.actionIdentifier == "snooze10" {
             // Same banner again in ten minutes.

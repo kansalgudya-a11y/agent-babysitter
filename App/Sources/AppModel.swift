@@ -225,6 +225,7 @@ final class AppModel: ObservableObject {
                                      "hotKeyEnabled": true,
                                      "menuBarStyle": "status",
                                      "hotKeyCombo": "opt-cmd-b",
+                                     "autoUpdateCheck": true,
                                      "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -254,8 +255,9 @@ final class AppModel: ObservableObject {
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
         hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
-        hotKeyCombo = defaults.string(forKey: "hotKeyCombo") ?? "opt-cmd-b" 
+        hotKeyCombo = defaults.string(forKey: "hotKeyCombo") ?? "opt-cmd-b"
         menuBarStyle = defaults.string(forKey: "menuBarStyle") ?? "status"
+        autoUpdateCheck = defaults.bool(forKey: "autoUpdateCheck")
         precisionModeEnabled = precision
         claudeUsageMeterEnabled = defaults.bool(forKey: "claudeUsageMeterEnabled")
         liveUsageEnabled = defaults.bool(forKey: "liveUsageEnabled")
@@ -283,11 +285,51 @@ final class AppModel: ObservableObject {
         if claudeUsageMeterEnabled { applyClaudeUsageMeter() }
         if liveUsageEnabled { Task { await refreshLiveUsage(forceFetch: true) } }
         startCurrencyRateRefresh()
+        scheduleUpdateCheck()
     }
 
     private let currencyRateService = CurrencyRateService()
     private var cachedCurrencyRate: CurrencyRateService.CachedRate?
     private var currencyRateTimer: Timer?
+
+    /// Automatic daily update check. On by default; a network call to
+    /// github.com only (no user data). Off makes the app fully offline again.
+    @Published var autoUpdateCheck: Bool {
+        didSet {
+            UserDefaults.standard.set(autoUpdateCheck, forKey: "autoUpdateCheck")
+            scheduleUpdateCheck()
+        }
+    }
+    private let updateChecker = UpdateChecker()
+    private var updateCheckTimer: Timer?
+
+    /// Check for a new release at most once a day. A menu-bar app can run for
+    /// days, so a 6-hour heartbeat re-evaluates "has 24h passed?" rather than
+    /// relying on launch alone. New builds are announced once per version.
+    private func scheduleUpdateCheck() {
+        updateCheckTimer?.invalidate()
+        updateCheckTimer = nil
+        guard !Self.isSnapshotMode, autoUpdateCheck else { return }
+        Task { await runUpdateCheckIfDue() }
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor in await self?.runUpdateCheckIfDue() }
+        }
+    }
+
+    private func runUpdateCheckIfDue() async {
+        let defaults = UserDefaults.standard
+        let last = defaults.object(forKey: "lastUpdateCheck") as? Date ?? .distantPast
+        guard Date().timeIntervalSince(last) >= 24 * 3600 else { return }
+        defaults.set(Date(), forKey: "lastUpdateCheck")
+        await updateChecker.check()
+        guard case .available(let version, let url) = updateChecker.status else { return }
+        // Announce each new version once; don't re-nag daily for one the user
+        // has already been told about.
+        guard defaults.string(forKey: "lastNotifiedUpdateVersion") != version else { return }
+        defaults.set(version, forKey: "lastNotifiedUpdateVersion")
+        notificationManager.deliverUpdateAvailable(version: version, url: url)
+    }
 
     /// Keep the display rate live: fetch now and re-fetch on a short cadence
     /// while a non-USD currency is selected (USD needs no rate and no

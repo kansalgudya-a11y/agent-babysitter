@@ -208,6 +208,10 @@ struct PreferencesView: View {
                     Text(updates.currentVersion)
                         .foregroundStyle(.secondary)
                 }
+                Toggle(isOn: $model.autoUpdateCheck) {
+                    Text("Check for updates daily")
+                    Text("Once a day, asks github.com if a newer version exists and notifies you if so (nothing about your usage is sent). Turn off to keep the app fully offline.")
+                }
                 HStack {
                     Button("Check for updates") {
                         Task { await updates.check() }
