@@ -51,7 +51,7 @@ final class AppModel: ObservableObject {
             // not persist to the real prefs or hit the network.
             guard !Self.isSnapshotMode else { return }
             UserDefaults.standard.set(currencyCode, forKey: "currencyCode")
-            Task { await self.refreshCurrencyRate() }
+            startCurrencyRateRefresh()
         }
     }
     /// Cached USD→currency rate (1 for USD). Drives every cost display.
@@ -282,11 +282,29 @@ final class AppModel: ObservableObject {
         if precision { applyPrecisionMode() }
         if claudeUsageMeterEnabled { applyClaudeUsageMeter() }
         if liveUsageEnabled { Task { await refreshLiveUsage(forceFetch: true) } }
-        if currencyCode != "USD" { Task { await refreshCurrencyRate() } }
+        startCurrencyRateRefresh()
     }
 
     private let currencyRateService = CurrencyRateService()
     private var cachedCurrencyRate: CurrencyRateService.CachedRate?
+    private var currencyRateTimer: Timer?
+
+    /// Keep the display rate live: fetch now and re-fetch on a short cadence
+    /// while a non-USD currency is selected (USD needs no rate and no
+    /// network). Called on launch and whenever the currency changes.
+    private func startCurrencyRateRefresh() {
+        currencyRateTimer?.invalidate()
+        currencyRateTimer = nil
+        guard !Self.isSnapshotMode, currencyCode != "USD" else { return }
+        Task { await refreshCurrencyRate() }
+        currencyRateTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) {
+            [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.currencyCode != "USD" else { return }
+                await self.refreshCurrencyRate()
+            }
+        }
+    }
 
     /// Refresh the display-currency rate (no-op for USD). Persists the result
     /// so a relaunch shows converted costs immediately, offline.
@@ -452,6 +470,10 @@ final class AppModel: ObservableObject {
     func popoverOpened() {
         lastRowsSeenAt = Date()
         if refreshInterval != 2 { scheduleRefreshTimer(interval: 2) }
+        // Freshen the exchange rate when the user actually looks at costs.
+        if !Self.isSnapshotMode, currencyCode != "USD" {
+            Task { await refreshCurrencyRate() }
+        }
         let watcher = processWatcher
         Task {
             await watcher.setPace(fast: true)

@@ -71,7 +71,7 @@ struct PreferencesView: View {
                     }
                 }
                 if model.currencyCode != "USD" {
-                    Text("Costs are estimated in US dollars from token usage, then converted at the latest exchange rate. USD stays fully offline; other currencies fetch rates (no personal data sent).")
+                    Text("Costs are estimated in US dollars from token usage, then converted live at the latest exchange rate — refreshed automatically while the app runs and each time you open it. USD stays fully offline; other currencies fetch rates (no personal data sent).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

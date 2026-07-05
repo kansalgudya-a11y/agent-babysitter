@@ -9,7 +9,10 @@ import AgentBabysitterCore
 actor CurrencyRateService {
 
     private let session: URLSession
-    private let staleAfter: TimeInterval = 24 * 3600
+    /// Free fiat feeds publish ~daily, but we keep the displayed rate live by
+    /// re-fetching often; a short TTL lets the periodic refresh actually pull
+    /// a new value while still de-duping bursts (launch + currency change).
+    private let staleAfter: TimeInterval = 10 * 60
 
     init() {
         let config = URLSessionConfiguration.ephemeral
