@@ -209,3 +209,15 @@ final class SelfLimitingCommandTests: XCTestCase {
         XCTAssertEqual(sizeBefore, sizeAfter, "append past the cap must be skipped")
     }
 }
+
+final class TokenFormattingTests: XCTestCase {
+    func testRollsUnitsAtEachThousand() {
+        XCTAssertEqual(SessionCost.abbreviatedCount(812), "812")
+        XCTAssertEqual(SessionCost.abbreviatedCount(1_000), "1k")
+        XCTAssertEqual(SessionCost.abbreviatedCount(999_999), "999k")
+        XCTAssertEqual(SessionCost.abbreviatedCount(1_000_000), "1M")
+        // The reported bug: 264,924k must read as millions.
+        XCTAssertEqual(SessionCost.abbreviatedCount(264_924_000), "264.9M")
+        XCTAssertEqual(SessionCost.abbreviatedCount(1_540_000_000), "1.5B")
+    }
+}

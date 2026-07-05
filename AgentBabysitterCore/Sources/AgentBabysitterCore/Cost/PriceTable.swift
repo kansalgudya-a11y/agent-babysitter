@@ -60,6 +60,22 @@ public struct SessionCost: Equatable, Sendable {
 
     public var hasUnknownPricing: Bool { !unknownModels.isEmpty }
 
+    /// "812" / "42k" / "264.9M" / "1.2B" - rolls to the next unit past 999.
+    public var formattedTokens: String { Self.abbreviatedCount(totalTokens) }
+
+    public static func abbreviatedCount(_ count: Int) -> String {
+        func scaled(_ value: Double, _ unit: String) -> String {
+            let text = String(format: "%.1f", value)
+            return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + unit
+        }
+        switch count {
+        case ..<1_000: return "\(count)"
+        case ..<1_000_000: return "\(count / 1_000)k"
+        case ..<1_000_000_000: return scaled(Double(count) / 1e6, "M")
+        default: return scaled(Double(count) / 1e9, "B")
+        }
+    }
+
     public init() {}
 
     /// For previews/fixtures.

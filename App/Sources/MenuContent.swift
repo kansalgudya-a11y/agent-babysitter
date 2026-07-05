@@ -568,10 +568,9 @@ extension SessionCost {
             return "—"  // no readable usage at all (e.g. Antigravity)
         }
         if hasUnknownPricing {
-            let tokens = totalTokens >= 1000 ? "\(totalTokens / 1000)k" : "\(totalTokens)"
             return dollars > 0
-                ? String(format: "~$%.2f + %@ tokens", dollars, tokens)
-                : "\(tokens) tokens"
+                ? String(format: "~$%.2f + %@ tokens", dollars, formattedTokens)
+                : "\(formattedTokens) tokens"
         }
         return String(format: "~$%.2f", dollars)
     }
