@@ -47,6 +47,9 @@ final class AppModel: ObservableObject {
     @Published var currencyCode: String {
         didSet {
             guard currencyCode != oldValue else { return }
+            // The snapshot harness injects a currency via applyFixture; it must
+            // not persist to the real prefs or hit the network.
+            guard !Self.isSnapshotMode else { return }
             UserDefaults.standard.set(currencyCode, forKey: "currencyCode")
             Task { await self.refreshCurrencyRate() }
         }

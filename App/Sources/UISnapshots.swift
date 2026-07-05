@@ -64,6 +64,7 @@ enum UISnapshots {
             // with the dev machine's real settings.
             setFixturePref(false, forKey: "showAllLimits")
             setFixturePref(false, forKey: "claudeUsageMeterEnabled")
+            setFixturePref("USD", forKey: "currencyCode")
             let model = AppModel()
             configure(model)
             results.append((name, AnyView(MenuContent(model: model,
