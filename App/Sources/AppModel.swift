@@ -636,6 +636,7 @@ final class AppModel: ObservableObject {
             notificationManager.deliverLimitAlert(agentName: name, agentID: alert.agentID,
                                                   usedPercent: alert.usedPercent,
                                                   resetsAt: alert.resetsAt,
+                                                  windowMinutes: usageLimits[alert.agentID]?.windowMinutes ?? 300,
                                                   isWeekly: alert.isWeekly)
         }
     }

@@ -64,7 +64,14 @@ public struct CursorAdapter: AgentAdapter {
     }
 
     /// All composers that have actually been used (lastUpdatedAt present).
+    /// Every composer's reader shares one db, so the parse is memoized by the
+    /// db's mtime: without it, N tracked composers would each re-copy the
+    /// multi-MB SQLite file on every change (a copy-storm during active use).
     static func composers(inStateDBAt url: URL) -> [Composer] {
+        ComposerCache.shared.composers(forDBAt: url) { parseComposers(inStateDBAt: url) }
+    }
+
+    private static func parseComposers(inStateDBAt url: URL) -> [Composer] {
         guard let rows = copiedQuery(storeAt: url) else { return [] }
         var composers: [Composer] = []
         for (key, json) in rows {
@@ -260,5 +267,52 @@ public final class CursorComposerReader: SessionReading {
             if turnPhase == .completed { currentTurnStartedAt = composer.lastUpdatedAt }
             lastGrowthAt = composer.lastUpdatedAt
         }
+    }
+}
+
+/// Memoizes the composer parse by the db's mtime (base + WAL). Every
+/// CursorComposerReader shares one state.vscdb, so on a db change all N
+/// readers would otherwise each copy and re-parse a multi-MB file; with this
+/// the first parses and the rest read the cached result. Thread-safe because
+/// readers refresh on the store actor but the class itself makes no isolation
+/// promises.
+private final class ComposerCache: @unchecked Sendable {
+    static let shared = ComposerCache()
+    private let lock = NSLock()
+    private var cachedPath: String?
+    private var cachedMtime: Date?
+    private var cached: [CursorAdapter.Composer] = []
+
+    func composers(forDBAt url: URL,
+                   parse: () -> [CursorAdapter.Composer]) -> [CursorAdapter.Composer] {
+        let mtime = Self.combinedMtime(url)
+        lock.lock()
+        if cachedPath == url.path, cachedMtime == mtime {
+            defer { lock.unlock() }
+            return cached
+        }
+        lock.unlock()
+        // Parse outside the lock (it copies a file); a redundant parse under
+        // rare races is harmless and still cheaper than N copies.
+        let parsed = parse()
+        lock.lock()
+        cachedPath = url.path
+        cachedMtime = mtime
+        cached = parsed
+        lock.unlock()
+        return parsed
+    }
+
+    /// Newest of the db and its WAL sibling — the WAL is where Cursor's live
+    /// writes land before checkpoint.
+    private static func combinedMtime(_ url: URL) -> Date {
+        let fm = FileManager.default
+        var newest = Date.distantPast
+        for path in [url.path, url.path + "-wal"] {
+            if let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date {
+                newest = max(newest, m)
+            }
+        }
+        return newest
     }
 }

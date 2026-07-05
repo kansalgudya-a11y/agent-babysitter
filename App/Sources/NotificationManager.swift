@@ -60,12 +60,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// "Claude Code is at 82% of its 5-hour limit." One identifier per agent
-    /// per window kind so re-alerts replace rather than stack.
+    /// per window kind so re-alerts replace rather than stack. The label
+    /// follows the window length (Cursor is monthly, Manus daily).
     func deliverLimitAlert(agentName: String, agentID: String,
-                           usedPercent: Double, resetsAt: Date?, isWeekly: Bool = false) {
+                           usedPercent: Double, resetsAt: Date?,
+                           windowMinutes: Int = 300, isWeekly: Bool = false) {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
-        let window = isWeekly ? "weekly" : "5-hour"
+        let kind = isWeekly ? "weekly" : "primary"
+        let window = isWeekly ? "weekly" : Self.windowLabel(minutes: windowMinutes)
         var body = "\(agentName) is at \(Int(usedPercent))% of its \(window) limit."
         if let resetsAt, resetsAt > Date() {
             let minutes = Int(resetsAt.timeIntervalSinceNow / 60)
@@ -79,8 +82,18 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
         content.body = body
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "limit-\(agentID)-\(window)",
+        center.add(UNNotificationRequest(identifier: "limit-\(agentID)-\(kind)",
                                          content: content, trigger: nil))
+    }
+
+    /// Window name from its length, matching the menu's own labels.
+    private static func windowLabel(minutes: Int) -> String {
+        switch minutes {
+        case ..<361: return "5-hour"
+        case ..<(2 * 24 * 60): return "daily"
+        case ..<(8 * 24 * 60): return "weekly"
+        default: return "monthly"
+        }
     }
 
     private func body(for event: NotificationEvent, row: SessionRow,

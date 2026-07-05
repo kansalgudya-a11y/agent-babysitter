@@ -168,6 +168,30 @@ final class CursorAdapterTests: XCTestCase {
         XCTAssertEqual(done.turnPhase, .completed)
     }
 
+    func testParseCacheReturnsFreshDataAfterDBChanges() throws {
+        // The mtime-keyed parse cache must not serve stale composers after
+        // the db is rewritten (a newer composer appears).
+        let appSupport = try makeAppSupport()
+        let adapter = CursorAdapter(appSupport: appSupport)
+        let now = Date().timeIntervalSince1970 * 1000
+        writeStateDB(at: adapter.stateDBURL, rows: [
+            ("composerData:one", composerJSON(id: "one", name: "First", lastUpdatedAtMS: now)),
+        ])
+        XCTAssertEqual(CursorAdapter.composers(inStateDBAt: adapter.stateDBURL).count, 1)
+
+        // Rewrite with a second composer; bump mtime so the cache invalidates.
+        try? FileManager.default.removeItem(at: adapter.stateDBURL)
+        writeStateDB(at: adapter.stateDBURL, rows: [
+            ("composerData:one", composerJSON(id: "one", name: "First", lastUpdatedAtMS: now)),
+            ("composerData:two", composerJSON(id: "two", name: "Second", lastUpdatedAtMS: now)),
+        ])
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(5)],
+            ofItemAtPath: adapter.stateDBURL.path)
+        let ids = Set(CursorAdapter.composers(inStateDBAt: adapter.stateDBURL).map(\.id))
+        XCTAssertEqual(ids, ["one", "two"])
+    }
+
     func testReaderTreatsStaleActiveStatusAsCompleted() throws {
         // A composer abandoned mid-turn (app crash) must not read Working
         // forever off its sticky status.

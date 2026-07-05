@@ -203,7 +203,10 @@ struct MenuContent: View {
     private var limitsSection: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text("5-hour limits")
+                // Not all agents use a 5-hour window: Cursor is a monthly
+                // billing cycle, Manus a daily refresh. Each row shows its
+                // own reset, so the header stays window-agnostic.
+                Text("Usage limits")
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
@@ -328,10 +331,10 @@ struct MenuContent: View {
             }
             if let limit = entry.limit, let resets = limit.resetsAt,
                let exhaustion = UsageForecast.projectedExhaustion(limit) {
-                let early = max(Int(resets.timeIntervalSince(exhaustion) / 60), 1)
-                Text("on pace to run out ~\(early)m before reset")
+                let early = resets.timeIntervalSince(exhaustion)
+                Text("on pace to run out ~\(Self.humanDuration(early)) before reset")
                     .font(.caption2)
-                    .foregroundStyle(early >= 60 ? .red : .orange)
+                    .foregroundStyle(early >= 3600 ? .red : .orange)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
@@ -351,7 +354,7 @@ struct MenuContent: View {
         if let used = UsageForecast.estimatedCurrentPercent(limit) ?? limit.usedPercent {
             var text = "\(entry.name), \(Int(used)) percent of the \(windowName(limit.windowMinutes)) used"
             if let resets = limit.resetsAt, resets > Date() {
-                text += ", resets in \(Int(resets.timeIntervalSinceNow / 60)) minutes"
+                text += ", resets in \(Self.humanDuration(resets.timeIntervalSinceNow))"
             }
             return text
         }
@@ -396,9 +399,19 @@ struct MenuContent: View {
     /// "resets in 2h 22m" when the reset time is known and ahead of us.
     private func resetPhrase(_ resets: Date?) -> String? {
         guard let resets, resets > Date() else { return nil }
-        let minutes = Int(resets.timeIntervalSinceNow / 60)
-        return minutes >= 60 ? "resets in \(minutes / 60)h \(minutes % 60)m"
-                             : "resets in \(max(minutes, 1))m"
+        return "resets in " + Self.humanDuration(resets.timeIntervalSinceNow)
+    }
+
+    /// Compact duration that scales past a day, so monthly (Cursor) and daily
+    /// (Manus) windows don't render as "resets in 720h 0m".
+    static func humanDuration(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds), 60)
+        let days = total / 86_400
+        let hours = (total % 86_400) / 3600
+        let minutes = (total % 3600) / 60
+        if days >= 1 { return hours > 0 ? "\(days)d \(hours)h" : "\(days)d" }
+        if hours >= 1 { return "\(hours)h \(minutes)m" }
+        return "\(max(minutes, 1))m"
     }
 
     private func limitHelp(_ limit: UsageLimitSnapshot, estimate: Double? = nil) -> String {
@@ -412,9 +425,7 @@ struct MenuContent: View {
             parts.append("\(plan == plan.lowercased() ? plan.capitalized : plan) plan")
         }
         if let resets = limit.resetsAt, resets > Date() {
-            let minutes = Int(resets.timeIntervalSinceNow / 60)
-            parts.append(minutes >= 60 ? "resets in \(minutes / 60)h \(minutes % 60)m"
-                                       : "resets in \(minutes)m")
+            parts.append("resets in " + Self.humanDuration(resets.timeIntervalSinceNow))
         }
         if let weekly = limit.weeklyUsedPercent {
             var text = "weekly window \(Int(weekly))% used"
