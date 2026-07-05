@@ -75,12 +75,34 @@ struct PreferencesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Picker("Show costs as", selection: $model.costsArePlanValue) {
+                    Text("Plan value").tag(true)
+                    Text("API cost").tag(false)
+                }
+                if model.costsArePlanValue {
+                    Text("Costs are the estimated value of your usage at API list prices. On a subscription (Pro/Max/Plus) you aren't billed per token — this is what that usage would cost on the API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle(isOn: $model.syncStatsViaICloud) {
+                    Text("Sync stats across my Macs (iCloud Drive)")
+                    Text("Merges the stats totals from each of your Macs via a small file in iCloud Drive, so \"all time\" spans every machine. Only aggregate numbers — no session content — are stored.")
+                }
                 Button("Show the feature tour") {
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: "welcome")
                 }
+                Button("Session history…") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: "history")
+                }
             }
 
+    }
+
+    static func hourLabel(_ hour: Int) -> String {
+        let base = hour % 12 == 0 ? 12 : hour % 12
+        return "\(base) \(hour < 12 ? "AM" : "PM")"
     }
 
     @ViewBuilder private var notificationsTab: some View {
@@ -111,10 +133,41 @@ struct PreferencesView: View {
                             .frame(width: 44, alignment: .trailing)
                     }
                 }
+                LabeledContent("💸 Daily spend over") {
+                    HStack(spacing: 2) {
+                        Text(model.currency.symbol).foregroundStyle(.secondary)
+                        TextField("0 = off", value: $model.dailyBudget, format: .number)
+                            .frame(width: 70).multilineTextAlignment(.trailing)
+                    }
+                }
+                LabeledContent("💸 Weekly spend over") {
+                    HStack(spacing: 2) {
+                        Text(model.currency.symbol).foregroundStyle(.secondary)
+                        TextField("0 = off", value: $model.weeklyBudget, format: .number)
+                            .frame(width: 70).multilineTextAlignment(.trailing)
+                    }
+                }
             } header: {
                 Text("Notify me when…")
             } footer: {
-                Text("The bell button in the menu pauses all of these at once.")
+                Text("The bell button in the menu pauses all of these at once. Budgets are in your display currency; 0 turns a budget off.")
+            }
+
+            Section {
+                Toggle(isOn: $model.quietHoursEnabled) {
+                    Text("Quiet hours")
+                    Text("Silence every banner during these hours — the menu keeps updating live, you just won't get pinged overnight.")
+                }
+                if model.quietHoursEnabled {
+                    HStack {
+                        Picker("From", selection: $model.quietStartHour) {
+                            ForEach(0..<24) { Text(Self.hourLabel($0)).tag($0) }
+                        }
+                        Picker("to", selection: $model.quietEndHour) {
+                            ForEach(0..<24) { Text(Self.hourLabel($0)).tag($0) }
+                        }
+                    }
+                }
             }
 
             Section("Stuck detection") {

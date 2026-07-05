@@ -104,6 +104,30 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                          content: content, trigger: nil))
     }
 
+    /// "You've spent ~$52 today — over your $50 budget." Once per day/week.
+    func deliverCostBudgetAlert(isWeekly: Bool, spent: Double, budget: Double,
+                                money: (Double) -> String) {
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        let window = isWeekly ? "this week" : "today"
+        content.body = "You've spent \(money(spent)) \(window) — over your \(money(budget)) budget."
+        content.sound = .default
+        center.add(UNNotificationRequest(
+            identifier: "budget-\(isWeekly ? "week" : "day")", content: content, trigger: nil))
+    }
+
+    /// Warn that an installed agent can no longer be read (format drift).
+    func deliverCannotRead(agentName: String, agentID: String) {
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        content.title = "Can't read \(agentName)"
+        content.body = "\(agentName) is running but its data format looks new — "
+            + "updating Agent Babysitter may fix it."
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "cannot-read-\(agentID)",
+                                         content: content, trigger: nil))
+    }
+
     /// Window name from its length, matching the menu's own labels.
     private static func windowLabel(minutes: Int) -> String {
         switch minutes {
@@ -151,14 +175,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         authorizationRequested = true
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        // Snooze action on session banners.
+        // "Jump to it" focuses the session's terminal/app; snooze re-alerts.
+        let jump = UNNotificationAction(identifier: "jump", title: "Jump to it",
+                                        options: [.foreground])
         let snooze = UNNotificationAction(identifier: "snooze10",
                                           title: "Remind me in 10 min")
         // "Update now" opens the download; dismissing is "Later".
         let updateNow = UNNotificationAction(identifier: "update-now", title: "Update now",
                                              options: [.foreground])
         center.setNotificationCategories([
-            UNNotificationCategory(identifier: "session-event", actions: [snooze],
+            UNNotificationCategory(identifier: "session-event", actions: [jump, snooze],
                                    intentIdentifiers: []),
             UNNotificationCategory(identifier: "update", actions: [updateNow],
                                    intentIdentifiers: []),

@@ -35,6 +35,11 @@ struct AgentBabysitterApp: App {
             StatsView(model: model)
         }
         .windowResizability(.contentSize)
+
+        Window("Session History", id: "history") {
+            HistoryView(model: model)
+        }
+        .windowResizability(.contentSize)
     }
 }
 

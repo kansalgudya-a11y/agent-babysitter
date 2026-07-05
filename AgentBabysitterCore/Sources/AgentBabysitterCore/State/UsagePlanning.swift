@@ -57,6 +57,44 @@ public enum UsageAlertPlanner {
     }
 }
 
+/// Fires a heads-up when spend crosses a daily or weekly budget — once per
+/// window (keyed by the local day / ISO week), so a long task can't quietly
+/// blow the budget but you're not re-pinged all day. A budget of 0 is off.
+public enum CostBudgetPlanner {
+
+    public struct Alert: Equatable, Sendable {
+        public let isWeekly: Bool
+        public let spent: Double
+        public let budget: Double
+    }
+
+    public struct Outcome: Equatable, Sendable {
+        public let alerts: [Alert]
+        public let alertedDayKey: String?
+        public let alertedWeekKey: String?
+    }
+
+    /// `todaySpent`/`weekSpent` in USD; `dayKey`/`weekKey` identify the current
+    /// windows (e.g. "2026-07-06" and "2026-W27"); the alerted keys are what
+    /// last fired.
+    public static func plan(todaySpent: Double, dailyBudget: Double, dayKey: String,
+                            weekSpent: Double, weeklyBudget: Double, weekKey: String,
+                            alertedDayKey: String?, alertedWeekKey: String?) -> Outcome {
+        var alerts: [Alert] = []
+        var day = alertedDayKey
+        var week = alertedWeekKey
+        if dailyBudget > 0, todaySpent >= dailyBudget, alertedDayKey != dayKey {
+            day = dayKey
+            alerts.append(Alert(isWeekly: false, spent: todaySpent, budget: dailyBudget))
+        }
+        if weeklyBudget > 0, weekSpent >= weeklyBudget, alertedWeekKey != weekKey {
+            week = weekKey
+            alerts.append(Alert(isWeekly: true, spent: weekSpent, budget: weeklyBudget))
+        }
+        return Outcome(alerts: alerts, alertedDayKey: day, alertedWeekKey: week)
+    }
+}
+
 /// Local-day cost buckets persisted by the app (the store only retains 24h
 /// of sessions, so history must accumulate outside it).
 public enum DailyCostHistory {

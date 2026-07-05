@@ -55,6 +55,12 @@ public struct SessionCost: Equatable, Sendable {
     public internal(set) var dollars: Double = 0
     /// All usage tokens counted so far (the display value when pricing is unknown).
     public internal(set) var totalTokens: Int = 0
+    /// Token split — where the spend actually goes. Cache reads are cheap,
+    /// cache writes and output aren't; surfacing this helps people optimize.
+    public internal(set) var inputTokens: Int = 0
+    public internal(set) var outputTokens: Int = 0
+    public internal(set) var cacheReadTokens: Int = 0
+    public internal(set) var cacheWriteTokens: Int = 0
     /// Models with real usage but no price entry — show "pricing unknown".
     public internal(set) var unknownModels: Set<String> = []
 
@@ -79,10 +85,16 @@ public struct SessionCost: Equatable, Sendable {
     public init() {}
 
     /// For previews/fixtures.
-    public init(dollars: Double, totalTokens: Int = 0, unknownModels: Set<String> = []) {
+    public init(dollars: Double, totalTokens: Int = 0, unknownModels: Set<String> = [],
+                inputTokens: Int = 0, outputTokens: Int = 0,
+                cacheReadTokens: Int = 0, cacheWriteTokens: Int = 0) {
         self.dollars = dollars
         self.totalTokens = totalTokens
         self.unknownModels = unknownModels
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
     }
 }
 
@@ -128,16 +140,25 @@ public struct CostAccumulator: Sendable {
             unknownModel = payload.model ?? "unknown"
         }
 
-        cost.totalTokens += usage.totalTokens
-        cost.dollars += dollars
-        if let unknownModel { cost.unknownModels.insert(unknownModel) }
+        cost.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
 
         let day = LocalDay.start(of: entry.timestamp ?? Date(),
                                  timeZone: timeZoneOverride ?? .current)
         var daily = dailyCosts[day] ?? SessionCost()
-        daily.totalTokens += usage.totalTokens
-        daily.dollars += dollars
-        if let unknownModel { daily.unknownModels.insert(unknownModel) }
+        daily.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
         dailyCosts[day] = daily
+    }
+}
+
+extension SessionCost {
+    /// Fold one message's usage in: total + the input/output/cache split.
+    mutating func add(usage: TokenUsage, dollars: Double, unknownModel: String?) {
+        totalTokens += usage.totalTokens
+        inputTokens += usage.inputTokens
+        outputTokens += usage.outputTokens
+        cacheReadTokens += usage.cacheReadInputTokens
+        cacheWriteTokens += usage.cacheCreationInputTokens
+        self.dollars += dollars
+        if let unknownModel { unknownModels.insert(unknownModel) }
     }
 }

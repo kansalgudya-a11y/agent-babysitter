@@ -7,6 +7,7 @@ struct DayStat: Equatable, Identifiable {
     let day: Date
     let dollars: Double
     let byAgent: [String: Double]
+    var byProject: [String: Double] = [:]
     let activeMinutes: Double
     let sessions: Int
     var id: Date { day }
@@ -105,6 +106,31 @@ struct StatsView: View {
                     }
                 }
             }
+            if !costByProject.isEmpty {
+                Divider()
+                Text("By project")
+                    .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                ForEach(costByProject.sorted { $0.value > $1.value }.prefix(8), id: \.key) { project, dollars in
+                    HStack {
+                        Text(project).font(.callout).lineLimit(1)
+                        Spacer()
+                        Text(model.money(dollars))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            let tokens = model.todayCost
+            if tokens.inputTokens + tokens.outputTokens + tokens.cacheReadTokens
+                + tokens.cacheWriteTokens > 0 {
+                Divider()
+                Text("Today's tokens")
+                    .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                Text("input \(SessionCost.abbreviatedCount(tokens.inputTokens)) · output \(SessionCost.abbreviatedCount(tokens.outputTokens)) · cache-write \(SessionCost.abbreviatedCount(tokens.cacheWriteTokens)) · cache-read \(SessionCost.abbreviatedCount(tokens.cacheReadTokens))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Cache reads are cheap; output and cache writes are where spend goes.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
             HStack(alignment: .bottom) {
                 Text("Everything above is computed on this Mac from your agents' own files, since the day Agent Babysitter was installed. Nothing is sent anywhere.")
                     .font(.caption2)
@@ -177,6 +203,12 @@ struct StatsView: View {
     private var costByAgent: [String: Double] {
         selectedDays.reduce(into: [:]) { totals, day in
             for (agent, dollars) in day.byAgent { totals[agent, default: 0] += dollars }
+        }
+    }
+
+    var costByProject: [String: Double] {
+        selectedDays.reduce(into: [:]) { totals, day in
+            for (project, dollars) in day.byProject { totals[project, default: 0] += dollars }
         }
     }
 

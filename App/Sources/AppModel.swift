@@ -39,9 +39,41 @@ final class AppModel: ObservableObject {
     @Published var limitAlertThreshold: Double {
         didSet { UserDefaults.standard.set(limitAlertThreshold, forKey: "limitAlertThreshold") }
     }
+    /// Warn when today's / this week's estimated spend crosses this many USD.
+    /// 0 = off. Alert fires once per day / week.
+    @Published var dailyBudget: Double {
+        didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
+    }
+    @Published var weeklyBudget: Double {
+        didSet { UserDefaults.standard.set(weeklyBudget, forKey: "weeklyBudget") }
+    }
+    /// Costs are token-usage estimates at API list prices. On a subscription
+    /// that's the *value* of usage, not a bill — this reframes the label.
+    @Published var costsArePlanValue: Bool {
+        didSet { UserDefaults.standard.set(costsArePlanValue, forKey: "costsArePlanValue") }
+    }
+    @Published var quietHoursEnabled: Bool {
+        didSet { UserDefaults.standard.set(quietHoursEnabled, forKey: "quietHoursEnabled") }
+    }
+    @Published var quietStartHour: Int {
+        didSet { UserDefaults.standard.set(quietStartHour, forKey: "quietStartHour") }
+    }
+    @Published var quietEndHour: Int {
+        didSet { UserDefaults.standard.set(quietEndHour, forKey: "quietEndHour") }
+    }
+    /// Merge stats across your Macs via an iCloud Drive file. Off by default.
+    @Published var syncStatsViaICloud: Bool {
+        didSet {
+            UserDefaults.standard.set(syncStatsViaICloud, forKey: "syncStatsViaICloud")
+            if syncStatsViaICloud { Task { await self.loadSyncedStats() } }
+        }
+    }
     @Published var notificationsMuted: Bool {
         didSet { UserDefaults.standard.set(notificationsMuted, forKey: "notificationsMuted") }
     }
+    /// Session history (finished sessions) + agents we can no longer read.
+    @Published private(set) var sessionHistory: [SessionHistoryEntry] = []
+    @Published private(set) var unreadableAgents: [(id: String, name: String)] = []
     /// ISO code of the display currency. USD (default) needs no rate and no
     /// network; picking another fetches its rate.
     @Published var currencyCode: String {
@@ -226,6 +258,9 @@ final class AppModel: ObservableObject {
                                      "menuBarStyle": "status",
                                      "hotKeyCombo": "opt-cmd-b",
                                      "autoUpdateCheck": true,
+                                     "costsArePlanValue": true,
+                                     "quietStartHour": 22,
+                                     "quietEndHour": 8,
                                      "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -254,6 +289,13 @@ final class AppModel: ObservableObject {
         notifyStalled = defaults.bool(forKey: "notifyStalled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
+        dailyBudget = defaults.double(forKey: "dailyBudget")
+        weeklyBudget = defaults.double(forKey: "weeklyBudget")
+        costsArePlanValue = defaults.bool(forKey: "costsArePlanValue")
+        quietHoursEnabled = defaults.bool(forKey: "quietHoursEnabled")
+        quietStartHour = defaults.integer(forKey: "quietStartHour")
+        quietEndHour = defaults.integer(forKey: "quietEndHour")
+        syncStatsViaICloud = defaults.bool(forKey: "syncStatsViaICloud")
         hotKeyEnabled = defaults.bool(forKey: "hotKeyEnabled")
         hotKeyCombo = defaults.string(forKey: "hotKeyCombo") ?? "opt-cmd-b"
         menuBarStyle = defaults.string(forKey: "menuBarStyle") ?? "status"
@@ -286,8 +328,10 @@ final class AppModel: ObservableObject {
         if liveUsageEnabled { Task { await refreshLiveUsage(forceFetch: true) } }
         startCurrencyRateRefresh()
         scheduleUpdateCheck()
+        loadSessionHistory()
     }
 
+    private var notifiedUnreadable: Set<String> = []
     private let currencyRateService = CurrencyRateService()
     private var cachedCurrencyRate: CurrencyRateService.CachedRate?
     private var currencyRateTimer: Timer?
@@ -597,6 +641,7 @@ final class AppModel: ObservableObject {
         let departed = Set(self.rows.map(\.id)).subtracting(rows.map(\.id))
         if !departed.isEmpty {
             notificationManager.removeDelivered(sessionIDs: Array(departed))
+            recordHistory(for: self.rows.filter { departed.contains($0.id) })
         }
         self.rows = rows
         self.usageLimits = usageLimits
@@ -630,13 +675,24 @@ final class AppModel: ObservableObject {
             lastDebugAgents = debugAgents
             UserDefaults.standard.set(debugAgents, forKey: "debugAgents")
         }
-        deliverLimitAlerts(usageLimits)
+        self.unreadableAgents = await computeUnreadableAgents(rows: rows)
         recordCostHistory(todayCost.dollars)
         await recordStats(rows: rows)
         adaptRefreshCadence()
         self.summary = summary
         self.processDetectionDegraded = degraded
         self.todayCost = todayCost
+
+        // Quiet hours silence every banner (the menu still updates live).
+        let quiet = quietHoursEnabled && QuietHours.isQuiet(
+            now: Date(), startHour: quietStartHour, endHour: quietEndHour)
+        guard !quiet else { return }
+        deliverLimitAlerts(usageLimits)
+        deliverBudgetAlerts(todayCost.dollars)
+        for agent in unreadableAgents where notifiedUnreadable.insert(agent.id).inserted {
+            notificationManager.deliverCannotRead(agentName: agent.name, agentID: agent.id)
+        }
+        notifiedUnreadable.formIntersection(unreadableAgents.map(\.id))  // re-arm once healthy
 
         // Activity-based agents (Antigravity) infer turn ends from write
         // gaps; a long think would flap Done/Working and spam notifications.
@@ -673,6 +729,7 @@ final class AppModel: ObservableObject {
         let today = DailyCostHistory.key(for: now)
 
         var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
+        var byProject = defaults.dictionary(forKey: "costByProject") as? [String: [String: Double]] ?? [:]
         var counts = defaults.dictionary(forKey: "sessionCounts") as? [String: Int] ?? [:]
         if let legacy = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] {
             for (day, ids) in legacy where counts[day] == nil { counts[day] = ids.count }
@@ -681,18 +738,28 @@ final class AppModel: ObservableObject {
         let todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
         var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
 
-        let ledger = StatsLedger.ticked(
-            .init(costByAgent: byAgent, sessionCounts: counts,
+        var ledger = StatsLedger.ticked(
+            .init(costByAgent: byAgent, costByProject: byProject, sessionCounts: counts,
                   todaySessionIDs: Set(todaySeen[today] ?? []),
                   activeMinutes: activeMinutes),
             todayKey: today,
             todayCostByAgent: await store.todayCostByAgent(),
+            todayCostByProject: await store.todayCostByProject(),
             visibleSessionIDs: rows.map(\.id),
             anyWorking: anyWorking,
             secondsSinceLastTick: sinceCredit)
 
+        // Fold in any sibling Macs' synced ledgers so stats are cross-machine.
+        if syncStatsViaICloud {
+            ledger = StatsSync.mergedWithSiblings(ledger)
+            StatsSync.write(ledger)
+        }
+
         if ledger.costByAgent != byAgent {
             defaults.set(ledger.costByAgent, forKey: "costByAgent")
+        }
+        if ledger.costByProject != byProject {
+            defaults.set(ledger.costByProject, forKey: "costByProject")
         }
         if ledger.sessionCounts != counts {
             defaults.set(ledger.sessionCounts, forKey: "sessionCounts")
@@ -704,6 +771,7 @@ final class AppModel: ObservableObject {
             defaults.set(ledger.activeMinutes, forKey: "activeMinutes")
         }
         byAgent = ledger.costByAgent
+        byProject = ledger.costByProject
         counts = ledger.sessionCounts
         activeMinutes = ledger.activeMinutes
 
@@ -712,6 +780,7 @@ final class AppModel: ObservableObject {
             let key = DailyCostHistory.key(for: entry.day)
             return DayStat(day: entry.day, dollars: entry.dollars,
                            byAgent: byAgent[key] ?? [:],
+                           byProject: byProject[key] ?? [:],
                            activeMinutes: activeMinutes[key] ?? 0,
                            sessions: counts[key] ?? 0)
         }
@@ -726,6 +795,117 @@ final class AppModel: ObservableObject {
         guard updated != saved else { return }
         UserDefaults.standard.set(updated, forKey: "costHistory")
         costHistory = DailyCostHistory.series(updated)
+    }
+
+    /// Warn once per day/week when spend crosses the user's budget. Week total
+    /// is the last 7 local days of the persisted cost history.
+    private func deliverBudgetAlerts(_ todayDollars: Double) {
+        guard dailyBudget > 0 || weeklyBudget > 0 else { return }
+        let defaults = UserDefaults.standard
+        let now = Date()
+        let history = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        var weekSpent = todayDollars
+        for offset in 1..<7 {
+            let key = DailyCostHistory.key(for: now.addingTimeInterval(Double(-offset) * 86_400))
+            weekSpent += history[key] ?? 0
+        }
+        let outcome = CostBudgetPlanner.plan(
+            todaySpent: todayDollars, dailyBudget: dailyBudget,
+            dayKey: DailyCostHistory.key(for: now),
+            weekSpent: weekSpent, weeklyBudget: weeklyBudget,
+            weekKey: Self.isoWeekKey(now),
+            alertedDayKey: defaults.string(forKey: "alertedCostDay"),
+            alertedWeekKey: defaults.string(forKey: "alertedCostWeek"))
+        defaults.set(outcome.alertedDayKey, forKey: "alertedCostDay")
+        defaults.set(outcome.alertedWeekKey, forKey: "alertedCostWeek")
+        for alert in outcome.alerts {
+            notificationManager.deliverCostBudgetAlert(
+                isWeekly: alert.isWeekly, spent: alert.spent,
+                budget: alert.budget, money: { self.money($0) })
+        }
+    }
+
+    private static func isoWeekKey(_ date: Date) -> String {
+        var cal = Calendar(identifier: .iso8601)
+        cal.timeZone = .current
+        let c = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+        return "\(c.yearForWeekOfYear ?? 0)-W\(c.weekOfYear ?? 0)"
+    }
+
+    // MARK: - Session history
+
+    private func recordHistory(for rows: [SessionRow]) {
+        guard !Self.isSnapshotMode else { return }
+        var history = sessionHistory
+        for row in rows {
+            let entry = SessionHistoryEntry(
+                id: "\(row.agentID)/\(row.id)", sessionID: row.id,
+                agentID: row.agentID, agentName: row.agentName,
+                project: row.projectName, cwd: row.cwd,
+                startedAt: row.turnStartedAt, endedAt: Date(),
+                dollars: row.cost.dollars, totalTokens: row.cost.totalTokens,
+                transcriptPath: row.transcriptURL?.path)
+            history = SessionHistoryLedger.record(entry, into: history)
+        }
+        guard history != sessionHistory else { return }
+        sessionHistory = history
+        if let data = try? JSONEncoder().encode(history) {
+            try? data.write(to: Self.historyFileURL)
+        }
+    }
+
+    private func loadSessionHistory() {
+        guard let data = try? Data(contentsOf: Self.historyFileURL),
+              let saved = try? JSONDecoder().decode([SessionHistoryEntry].self, from: data)
+        else { return }
+        sessionHistory = saved
+    }
+
+    private static let historyFileURL: URL = {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AgentBabysitter")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("session-history.json")
+    }()
+
+    // MARK: - Agent-drift health
+
+    /// An installed+running agent whose data files are churning but yields no
+    /// readable sessions — likely a format change we can't parse. Surfaced as
+    /// a menu warning so the promise ("I watch your agents") fails loudly.
+    private func computeUnreadableAgents(rows: [SessionRow]) async -> [(id: String, name: String)] {
+        let running = runningAgentIDs
+        let readByAgent = Dictionary(grouping: rows, by: \.agentID).mapValues(\.count)
+        var flagged: [(id: String, name: String)] = []
+        for adapter in adapters where running.contains(adapter.id) {
+            let recent = Self.dataRecentlyModified(adapter.transcriptRoot)
+            if AgentHealth.status(running: true, dataRecentlyModified: recent,
+                                  sessionsParsed: readByAgent[adapter.id] ?? 0) == .cannotRead {
+                flagged.append((id: adapter.id, name: adapter.displayName))
+            }
+        }
+        return flagged
+    }
+
+    /// True when the data root (or an immediate child) was written in the last
+    /// ~10 minutes — evidence the agent is actively producing data.
+    private static func dataRecentlyModified(_ root: URL) -> Bool {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-600)
+        func mtime(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+        }
+        if mtime(root) > cutoff { return true }
+        let children = (try? fm.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey], options: [])) ?? []
+        return children.contains { mtime($0) > cutoff }
+    }
+
+    private func loadSyncedStats() async {
+        // Merging happens on the next stats tick; nudge one now.
+        statsDays = []
+        await recordStats(rows: rows)
     }
 
     /// Alert once per window (5h and weekly independently) when an agent

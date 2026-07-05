@@ -206,6 +206,9 @@ enum UISnapshots {
                            byAgent: ["claude-code": wave * 1.1,
                                      "codex": wave * 0.4,
                                      "antigravity": wave * 0.1],
+                           byProject: ["agent-babysitter": wave * 0.9,
+                                       "checkout-service": wave * 0.5,
+                                       "neon-county": wave * 0.2],
                            activeMinutes: wave * 3.2,
                            sessions: Int(wave / 12))
         }.reversed()
@@ -215,8 +218,11 @@ enum UISnapshots {
             model.applyFixture(
                 rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
                 usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
-                todayCost: SessionCost(dollars: 22.9), costHistory: history,
-                statsDays: Array(statsDays))
+                todayCost: SessionCost(dollars: 22.9, totalTokens: 5_400_000,
+                                       inputTokens: 800_000, outputTokens: 600_000,
+                                       cacheReadTokens: 40_000_000,
+                                       cacheWriteTokens: 4_000_000),
+                costHistory: history, statsDays: Array(statsDays))
             results.append((name, AnyView(StatsView(model: model, initialRange: range))))
         }
         stats("stats-today", .today)

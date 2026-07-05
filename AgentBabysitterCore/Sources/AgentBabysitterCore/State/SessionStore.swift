@@ -289,6 +289,10 @@ public actor SessionStore {
             guard let daily = tracked.reader.dailyCosts[midnight] else { continue }
             total.dollars += daily.dollars
             total.totalTokens += daily.totalTokens
+            total.inputTokens += daily.inputTokens
+            total.outputTokens += daily.outputTokens
+            total.cacheReadTokens += daily.cacheReadTokens
+            total.cacheWriteTokens += daily.cacheWriteTokens
             total.unknownModels.formUnion(daily.unknownModels)
         }
         return total
@@ -302,6 +306,22 @@ public actor SessionStore {
         for (_, tracked) in sessions {
             guard let daily = tracked.reader.dailyCosts[midnight] else { continue }
             totals[tracked.adapter.id, default: 0] += daily.dollars
+        }
+        return totals
+    }
+
+    /// Today's dollars grouped by project (cwd folder name), for the stats
+    /// window's per-project breakdown. Sessions with no readable cwd fall
+    /// under their display label.
+    public func todayCostByProject(at now: Date = Date(),
+                                   timeZone: TimeZone = .current) -> [String: Double] {
+        let midnight = LocalDay.start(of: now, timeZone: timeZone)
+        var totals: [String: Double] = [:]
+        for (_, tracked) in sessions {
+            guard let daily = tracked.reader.dailyCosts[midnight], daily.dollars > 0 else { continue }
+            let project = tracked.reader.lastKnownCWD
+                .map { URL(fileURLWithPath: $0).lastPathComponent } ?? tracked.projectDirName
+            totals[project, default: 0] += daily.dollars
         }
         return totals
     }

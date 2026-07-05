@@ -53,6 +53,14 @@ struct MenuContent: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
             }
+            ForEach(model.unreadableAgents, id: \.id) { agent in
+                Label("\(agent.name) is running but its data format looks new — try updating Agent Babysitter.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
 
             Divider()
             if !model.installedAgents.isEmpty {
@@ -465,11 +473,13 @@ struct MenuContent: View {
         HStack(spacing: 8) {
             // A brand-new install has no cost to report; skip the noise.
             if !model.noAgentsDetected {
-            Text("Today: \(model.todayCost.display(money: { model.money($0) }))")
+            Text("Today: \(model.todayCost.display(money: { model.money($0) }))\(model.costsArePlanValue ? " value" : "")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .onTapGesture { showCostInfo.toggle() }
-                .help("Click for the 7-day trend")
+                .help(model.costsArePlanValue
+                      ? "Estimated value of today's usage at API list prices — a subscription doesn't bill per token. Click for the 7-day trend."
+                      : "Click for the 7-day trend")
             Button {
                 showCostInfo.toggle()
             } label: {
@@ -505,6 +515,15 @@ struct MenuContent: View {
             .buttonStyle(.borderless)
             .help("This week's stats")
             .accessibilityLabel("Statistics")
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: "history")
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .buttonStyle(.borderless)
+            .help("Session history")
+            .accessibilityLabel("Session history")
             Button {
                 model.notificationsMuted.toggle()
             } label: {
