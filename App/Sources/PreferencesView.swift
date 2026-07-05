@@ -7,6 +7,33 @@ struct PreferencesView: View {
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateChecker()
     @State private var licenseKeyInput = ""
+    // Budget fields edit through plain strings so typing (incl. decimals) is
+    // smooth — a `value:` number TextField reformats mid-keystroke and fights
+    // the cursor. The model Double is updated on change.
+    @State private var dailyBudgetText = ""
+    @State private var weeklyBudgetText = ""
+
+    @ViewBuilder
+    private func budgetField(_ text: Binding<String>, apply: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 2) {
+            Text(model.currency.symbol).foregroundStyle(.secondary)
+            TextField("0 = off", text: text)
+                .frame(width: 70)
+                .multilineTextAlignment(.trailing)
+                .onChange(of: text.wrappedValue) { _, new in apply(Self.parseBudget(new)) }
+        }
+    }
+
+    static func parseBudget(_ s: String) -> Double {
+        let cleaned = s.replacingOccurrences(of: ",", with: ".")
+            .filter { $0.isNumber || $0 == "." }
+        return max(0, Double(cleaned) ?? 0)
+    }
+
+    static func formatBudget(_ v: Double) -> String {
+        guard v > 0 else { return "" }
+        return v == v.rounded() ? String(Int(v)) : String(format: "%g", v)
+    }
 
     var body: some View {
         TabView {
@@ -35,6 +62,10 @@ struct PreferencesView: View {
             .tabItem { Label("License & Updates", systemImage: "checkmark.seal") }
         }
         .frame(width: 480, height: 420)
+        .onAppear {
+            dailyBudgetText = Self.formatBudget(model.dailyBudget)
+            weeklyBudgetText = Self.formatBudget(model.weeklyBudget)
+        }
     }
 
     @ViewBuilder private var generalTab: some View {
@@ -134,18 +165,10 @@ struct PreferencesView: View {
                     }
                 }
                 LabeledContent("💸 Daily spend over") {
-                    HStack(spacing: 2) {
-                        Text(model.currency.symbol).foregroundStyle(.secondary)
-                        TextField("0 = off", value: $model.dailyBudget, format: .number)
-                            .frame(width: 70).multilineTextAlignment(.trailing)
-                    }
+                    budgetField($dailyBudgetText) { model.dailyBudget = $0 }
                 }
                 LabeledContent("💸 Weekly spend over") {
-                    HStack(spacing: 2) {
-                        Text(model.currency.symbol).foregroundStyle(.secondary)
-                        TextField("0 = off", value: $model.weeklyBudget, format: .number)
-                            .frame(width: 70).multilineTextAlignment(.trailing)
-                    }
+                    budgetField($weeklyBudgetText) { model.weeklyBudget = $0 }
                 }
             } header: {
                 Text("Notify me when…")
