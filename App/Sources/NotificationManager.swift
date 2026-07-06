@@ -106,6 +106,41 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                          content: content, trigger: nil))
     }
 
+    /// The predictive cousin of deliverLimitAlert: "on pace to hit its 5-hour
+    /// limit at 2:14 PM — 40m before it resets." Same identifier scheme so a
+    /// refreshed projection replaces the pending banner instead of stacking.
+    func deliverPaceWarning(agentName: String, agentID: String,
+                            usedPercent: Double, exhaustionAt: Date,
+                            resetsAt: Date, isWeekly: Bool,
+                            windowMinutes: Int = 300) {
+        requestAuthorizationIfNeeded()
+        let content = UNMutableNotificationContent()
+        let kind = isWeekly ? "weekly" : "primary"
+        let window = isWeekly ? "weekly" : Self.windowLabel(minutes: windowMinutes)
+        let early = Int(resetsAt.timeIntervalSince(exhaustionAt) / 60)
+        let earlyText = early >= 60 ? "\(early / 60)h \(early % 60)m" : "\(early)m"
+        content.body = "\(agentName) is at \(Int(usedPercent))% and on pace to hit its "
+            + "\(window) limit at \(Self.clockTime(exhaustionAt)) — "
+            + "\(earlyText) before it resets."
+        content.sound = .default
+        center.add(UNNotificationRequest(identifier: "pace-\(agentID)-\(kind)",
+                                         content: content, trigger: nil))
+    }
+
+    /// "2:14 PM" today, "Thu 2:14 PM" beyond it — enough precision for a
+    /// heads-up without a date ribbon.
+    static func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        if Calendar.current.isDateInToday(date) {
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("EEE j:mm")
+        }
+        return formatter.string(from: date)
+    }
+
     /// "Agent Babysitter 0.7.0 is available." Tapping it (or "Update now")
     /// opens the release page to download the new build. One identifier so a
     /// newer version replaces an older pending banner. `notes` is the

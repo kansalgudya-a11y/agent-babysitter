@@ -196,6 +196,11 @@ struct PreferencesView: View {
                             .frame(width: 44, alignment: .trailing)
                     }
                 }
+                Toggle(isOn: $model.notifyPace) {
+                    Text("⏱ An agent is on pace to run out")
+                    Text("Predicts the pace early: one heads-up with the time the limit would hit — before the wall, not after.")
+                }
+                .hapticTick(on: model.notifyPace)
                 Toggle(isOn: $model.weeklyDigestEnabled) {
                     Text("📊 Weekly summary")
                     Text("One Sunday-evening note: the week's estimated cost, session count, and busiest project.")
@@ -374,7 +379,7 @@ struct PreferencesView: View {
                     Agent Babysitter \(updates.currentVersion)
                     limits: \(defaults.string(forKey: "debugUsageLimits") ?? defaults.dictionary(forKey: "debugUsageLimits").map(String.init(describing:)) ?? "-")
                     agents: \(defaults.string(forKey: "debugAgents") ?? "-")
-                    toggles: precision=\(model.precisionModeEnabled) meter=\(model.claudeUsageMeterEnabled) live=\(model.liveUsageEnabled) alerts=\(model.notifyLimit)@\(Int(model.limitAlertThreshold))%
+                    toggles: precision=\(model.precisionModeEnabled) meter=\(model.claudeUsageMeterEnabled) live=\(model.liveUsageEnabled) alerts=\(model.notifyLimit)@\(Int(model.limitAlertThreshold))% pace=\(model.notifyPace)
                     """
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(report, forType: .string)

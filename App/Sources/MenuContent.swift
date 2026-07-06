@@ -362,10 +362,11 @@ struct MenuContent: View {
             if let limit = entry.limit, let resets = limit.resetsAt,
                let exhaustion = UsageForecast.projectedExhaustion(limit) {
                 let early = resets.timeIntervalSince(exhaustion)
-                Text("on pace to run out ~\(Self.humanDuration(early)) before reset")
+                Text("on pace to hit the limit at \(NotificationManager.clockTime(exhaustion))")
                     .font(.caption2)
                     .foregroundStyle(early >= 3600 ? .red : .orange)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                    .help("At the current pace the window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it.")
             }
         }
         .accessibilityElement(children: .ignore)

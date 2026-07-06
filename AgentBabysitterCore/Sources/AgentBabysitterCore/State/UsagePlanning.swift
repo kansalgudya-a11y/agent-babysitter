@@ -57,6 +57,88 @@ public enum UsageAlertPlanner {
     }
 }
 
+/// Fires the *predictive* limit warning: not "you crossed 80%" but "at this
+/// pace you hit the wall at 2:14 PM — before the window resets". Complements
+/// UsageAlertPlanner, which stays reactive: pace warns in the band between
+/// `minUsedPercent` and the reactive threshold, and goes quiet above it so
+/// the two never stack banners for the same reading.
+public enum PaceAlertPlanner {
+
+    public struct Alert: Equatable, Sendable {
+        public let agentID: String
+        public let isWeekly: Bool
+        public let usedPercent: Double
+        /// When the current pace crosses 100%.
+        public let exhaustionAt: Date
+        /// When the window would have reset anyway.
+        public let resetsAt: Date
+    }
+
+    public struct Outcome: Equatable, Sendable {
+        public let alerts: [Alert]
+        public let alertedFiveHour: [String: Date]
+        public let alertedWeekly: [String: Date]
+    }
+
+    /// Early-window pace looks alarming after any burst, so a projection only
+    /// counts once real usage has accumulated…
+    public static let minimumUsedPercent = 30.0
+    /// …and only when it lands meaningfully before the reset.
+    public static let minimumShortfall: TimeInterval = 10 * 60
+
+    /// One warning per agent per window (5h and weekly independently),
+    /// deduped by reset time exactly like UsageAlertPlanner.
+    public static func plan(limits: [String: UsageLimitSnapshot],
+                            threshold: Double,
+                            alertedFiveHour: [String: Date],
+                            alertedWeekly: [String: Date],
+                            now: Date = Date()) -> Outcome {
+        var alerts: [Alert] = []
+        var fiveHour = alertedFiveHour
+        var weekly = alertedWeekly
+
+        for (agentID, limit) in limits.sorted(by: { $0.key < $1.key }) {
+            if let alert = evaluate(agentID: agentID, snapshot: limit,
+                                    isWeekly: false, threshold: threshold, now: now),
+               fiveHour[agentID] != alert.resetsAt {
+                fiveHour[agentID] = alert.resetsAt
+                alerts.append(alert)
+            }
+            // The weekly fields ride on the same snapshot; the pace math is
+            // window-agnostic, so lift them into a snapshot of their own.
+            if let weeklyUsed = limit.weeklyUsedPercent,
+               let weeklyResets = limit.weeklyResetsAt {
+                let synthetic = UsageLimitSnapshot(usedPercent: weeklyUsed,
+                                                   windowMinutes: 7 * 24 * 60,
+                                                   resetsAt: weeklyResets,
+                                                   capturedAt: limit.capturedAt,
+                                                   plan: nil, isLive: limit.isLive,
+                                                   weeklyUsedPercent: nil,
+                                                   weeklyResetsAt: nil)
+                if let alert = evaluate(agentID: agentID, snapshot: synthetic,
+                                        isWeekly: true, threshold: threshold, now: now),
+                   weekly[agentID] != alert.resetsAt {
+                    weekly[agentID] = alert.resetsAt
+                    alerts.append(alert)
+                }
+            }
+        }
+        return Outcome(alerts: alerts, alertedFiveHour: fiveHour, alertedWeekly: weekly)
+    }
+
+    private static func evaluate(agentID: String, snapshot: UsageLimitSnapshot,
+                                 isWeekly: Bool, threshold: Double,
+                                 now: Date) -> Alert? {
+        guard let used = snapshot.usedPercent,
+              used >= minimumUsedPercent, used < threshold,
+              let resets = snapshot.resetsAt,
+              let exhaustion = UsageForecast.projectedExhaustion(snapshot, now: now),
+              resets.timeIntervalSince(exhaustion) >= minimumShortfall else { return nil }
+        return Alert(agentID: agentID, isWeekly: isWeekly, usedPercent: used,
+                     exhaustionAt: exhaustion, resetsAt: resets)
+    }
+}
+
 /// Fires a heads-up when spend crosses a daily or weekly budget — once per
 /// window (keyed by the local day / ISO week), so a long task can't quietly
 /// blow the budget but you're not re-pinged all day. A budget of 0 is off.

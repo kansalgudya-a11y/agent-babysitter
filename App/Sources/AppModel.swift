@@ -45,6 +45,9 @@ final class AppModel: ObservableObject {
     @Published var limitAlertThreshold: Double {
         didSet { UserDefaults.standard.set(limitAlertThreshold, forKey: "limitAlertThreshold") }
     }
+    @Published var notifyPace: Bool {
+        didSet { UserDefaults.standard.set(notifyPace, forKey: "notifyPace") }
+    }
     /// Warn when today's / this week's estimated spend crosses this many USD.
     /// 0 = off. Alert fires once per day / week.
     @Published var dailyBudget: Double {
@@ -260,6 +263,14 @@ final class AppModel: ObservableObject {
     private var alertedWeekly: [String: Date] =
         (UserDefaults.standard.dictionary(forKey: "alertedWeekly") as? [String: Double] ?? [:])
             .mapValues(Date.init(timeIntervalSince1970:))
+    /// Pace warnings share the once-per-window discipline, tracked apart from
+    /// the threshold alerts so each can fire in the same window.
+    private var paceAlertedFiveHour: [String: Date] =
+        (UserDefaults.standard.dictionary(forKey: "paceAlertedFiveHour") as? [String: Double] ?? [:])
+            .mapValues(Date.init(timeIntervalSince1970:))
+    private var paceAlertedWeekly: [String: Date] =
+        (UserDefaults.standard.dictionary(forKey: "paceAlertedWeekly") as? [String: Double] ?? [:])
+            .mapValues(Date.init(timeIntervalSince1970:))
     /// True while any agent's window is at/over 90% — tints the menu bar.
     @Published private(set) var limitDanger = false
 
@@ -274,6 +285,7 @@ final class AppModel: ObservableObject {
                                      "notifyDone": true,
                                      "notifyStalled": true,
                                      "notifyLimit": true,
+                                     "notifyPace": true,
                                      "limitAlertThreshold": 80.0,
                                      "hotKeyEnabled": true,
                                      "menuBarStyle": "status",
@@ -314,6 +326,7 @@ final class AppModel: ObservableObject {
         waitingReminderMinutes = defaults.double(forKey: "waitingReminderMinutes")
         weeklyDigestEnabled = defaults.bool(forKey: "weeklyDigestEnabled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
+        notifyPace = defaults.bool(forKey: "notifyPace")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
         dailyBudget = defaults.double(forKey: "dailyBudget")
         weeklyBudget = defaults.double(forKey: "weeklyBudget")
@@ -1035,7 +1048,9 @@ final class AppModel: ObservableObject {
         hottestLimitPercent = effective.values
             .filter { $0.resetsAt.map { $0 > Date() } ?? true }
             .compactMap(\.usedPercent).max()
-        guard notifyLimit, !notificationsMuted else { return }
+        guard !notificationsMuted else { return }
+        deliverPaceWarnings(effective)
+        guard notifyLimit else { return }
         let outcome = UsageAlertPlanner.plan(limits: effective,
                                              threshold: limitAlertThreshold,
                                              alertedFiveHour: alertedFiveHour,
@@ -1058,6 +1073,36 @@ final class AppModel: ObservableObject {
                                                   resetsAt: alert.resetsAt,
                                                   windowMinutes: usageLimits[alert.agentID]?.windowMinutes ?? 300,
                                                   isWeekly: alert.isWeekly)
+        }
+    }
+
+    /// The predictive counterpart: warns while still below the threshold when
+    /// the pace says the window won't survive to its reset.
+    private func deliverPaceWarnings(_ effective: [String: UsageLimitSnapshot]) {
+        guard notifyPace else { return }
+        let outcome = PaceAlertPlanner.plan(limits: effective,
+                                            threshold: limitAlertThreshold,
+                                            alertedFiveHour: paceAlertedFiveHour,
+                                            alertedWeekly: paceAlertedWeekly)
+        if outcome.alertedFiveHour != paceAlertedFiveHour {
+            paceAlertedFiveHour = outcome.alertedFiveHour
+            UserDefaults.standard.set(paceAlertedFiveHour.mapValues(\.timeIntervalSince1970),
+                                      forKey: "paceAlertedFiveHour")
+        }
+        if outcome.alertedWeekly != paceAlertedWeekly {
+            paceAlertedWeekly = outcome.alertedWeekly
+            UserDefaults.standard.set(paceAlertedWeekly.mapValues(\.timeIntervalSince1970),
+                                      forKey: "paceAlertedWeekly")
+        }
+        for alert in outcome.alerts {
+            let name = installedAgents.first { $0.id == alert.agentID }?.name
+                ?? adapters.first { $0.id == alert.agentID }?.displayName ?? alert.agentID
+            notificationManager.deliverPaceWarning(agentName: name, agentID: alert.agentID,
+                                                   usedPercent: alert.usedPercent,
+                                                   exhaustionAt: alert.exhaustionAt,
+                                                   resetsAt: alert.resetsAt,
+                                                   isWeekly: alert.isWeekly,
+                                                   windowMinutes: usageLimits[alert.agentID]?.windowMinutes ?? 300)
         }
     }
 
