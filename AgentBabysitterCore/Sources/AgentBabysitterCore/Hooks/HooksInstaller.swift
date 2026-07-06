@@ -23,7 +23,11 @@ public enum HooksInstaller {
         .homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/AgentBabysitter/events.jsonl")
 
-    private static let hookEvents = ["Notification", "Stop"]
+    /// PreToolUse fires when a tool starts EXECUTING (after any permission
+    /// approval), which is what lets the app tell "waiting on a prompt" from
+    /// "running a long build". Installed idempotently at every launch, so
+    /// existing installs pick new events up automatically.
+    private static let hookEvents = ["Notification", "Stop", "PreToolUse"]
 
     /// 5MB, mirrored by the watcher's cap. The guard lives in the shell so
     /// an orphaned install (app quit or deleted with the toggle on) can't
@@ -180,6 +184,8 @@ public enum HookEventParser {
                 signal = (sessionID, .waitingForInput, detail(object["message"]))
             case "Stop":
                 signal = (sessionID, .turnCompleted, detail(object["last_assistant_message"]))
+            case "PreToolUse":
+                signal = (sessionID, .toolStarted, detail(object["tool_name"]))
             default: break
             }
         }

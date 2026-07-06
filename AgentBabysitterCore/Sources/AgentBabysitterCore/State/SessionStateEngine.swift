@@ -21,11 +21,15 @@ public struct HookSignal: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case waitingForInput  // Notification hook
         case turnCompleted    // Stop hook
+        case toolStarted      // PreToolUse hook — a tool began EXECUTING, so
+                              // any permission prompt was approved: working,
+                              // however long the tool runs
     }
     public let kind: Kind
     public let timestamp: Date
     /// What the agent said: the permission/question text for
-    /// waitingForInput, the reply's first line for turnCompleted.
+    /// waitingForInput, the reply's first line for turnCompleted, the tool
+    /// name for toolStarted.
     public let detail: String?
 
     public init(kind: Kind, timestamp: Date, detail: String? = nil) {
@@ -74,6 +78,7 @@ public enum SessionStateEngine {
             switch hook.kind {
             case .waitingForInput: return .waitingForInput
             case .turnCompleted: return .done
+            case .toolStarted: return .working  // runs however long the tool does
             }
         }
 
@@ -89,8 +94,12 @@ public enum SessionStateEngine {
             if growthAge < workingWindow {
                 return .working  // streaming right now
             }
-            if signals.hasPendingToolUses {
-                // tool_use written, no result, output quiet: permission prompt
+            if signals.hasPendingToolUses, !signals.precisionModeEnabled {
+                // tool_use written, no result, output quiet. In the transcript
+                // alone a permission prompt and a long-running tool look
+                // IDENTICAL, so this guess is heuristic-mode only — with hooks
+                // on, real prompts arrive exactly via the Notification hook,
+                // and this guess would mislabel every slow build as waiting.
                 return .waitingForInput
             }
             return growthAge >= stallThreshold ? .stalled : .working

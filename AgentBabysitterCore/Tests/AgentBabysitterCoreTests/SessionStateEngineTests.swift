@@ -117,6 +117,44 @@ final class SessionStateEngineTests: XCTestCase {
         XCTAssertEqual(evaluate(s), .done)
     }
 
+    // MARK: - Long-running tools must not read as "needs input"
+
+    /// In the transcript a permission prompt and a slow tool look identical
+    /// (tool_use written, no result, quiet). With hooks on, real prompts
+    /// arrive via the Notification hook — the guess must not fire.
+    func testPrecisionModeNeverGuessesWaitingFromPendingTools() {
+        // A 2-minute quiet xcodebuild: working, not waiting
+        let s = signals(growthAge: 120, phase: .midTurn, pending: true, precision: true)
+        XCTAssertEqual(evaluate(s), .working)
+        // Stall detection stays the safety valve past the threshold
+        let stale = signals(growthAge: 400, phase: .midTurn, pending: true, precision: true)
+        XCTAssertEqual(evaluate(stale), .stalled)
+    }
+
+    /// Heuristic mode keeps the guess — it's the only permission signal there.
+    func testHeuristicModeStillGuessesWaitingFromPendingTools() {
+        let s = signals(growthAge: 120, phase: .midTurn, pending: true, precision: false)
+        XCTAssertEqual(evaluate(s), .waitingForInput)
+    }
+
+    /// PreToolUse: the tool started EXECUTING, so any prompt was approved —
+    /// working for as long as it runs, even past the stall threshold.
+    func testToolStartedHookForcesWorkingForTheWholeRun() {
+        let hook = HookSignal(kind: .toolStarted, timestamp: base.addingTimeInterval(-400),
+                              detail: "Bash")
+        let s = signals(growthAge: 500, phase: .midTurn, pending: true, hook: hook, precision: true)
+        XCTAssertEqual(evaluate(s), .working)
+    }
+
+    /// Approval flow: Notification (waiting) superseded by PreToolUse (working).
+    func testToolStartedSupersedesEarlierPermissionPrompt() {
+        let approved = HookSignal(kind: .toolStarted, timestamp: base.addingTimeInterval(-30),
+                                  detail: "Bash")
+        let s = signals(growthAge: 90, phase: .midTurn, pending: true, hook: approved,
+                        precision: true)
+        XCTAssertEqual(evaluate(s), .working)
+    }
+
     // MARK: - Menu bar aggregation (worst state wins: 🟡 > 🔴 > 🟢 > 🔵)
 
     func testWorstStatePriority() {

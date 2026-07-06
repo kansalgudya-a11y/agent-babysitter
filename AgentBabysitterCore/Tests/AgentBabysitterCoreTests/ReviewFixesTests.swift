@@ -14,8 +14,8 @@ final class HookCommandUpgradeTests: XCTestCase {
         let text = String(data: updated, encoding: .utf8)!
         XCTAssertFalse(text.contains("old-template"))
         XCTAssertTrue(text.contains("umask 077"))
-        // Still exactly one of ours per event, no duplicates.
-        XCTAssertEqual(text.components(separatedBy: HooksInstaller.marker).count - 1, 2)
+        // Still exactly one of ours per event (Notification/Stop/PreToolUse).
+        XCTAssertEqual(text.components(separatedBy: HooksInstaller.marker).count - 1, 3)
     }
 
     func testForeignHooksSurviveUpgrade() throws {

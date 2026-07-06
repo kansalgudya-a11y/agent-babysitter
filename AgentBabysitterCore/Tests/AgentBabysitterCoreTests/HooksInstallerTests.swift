@@ -22,7 +22,7 @@ final class HooksInstallerTests: XCTestCase {
     func testInstallIntoMissingSettingsCreatesHooks() throws {
         let result = try HooksInstaller.settingsWithHooksInstalled(nil)
         let root = try json(result)
-        for event in ["Notification", "Stop"] {
+        for event in ["Notification", "Stop", "PreToolUse"] {
             let cmds = commands(in: hookEntries(root, event))
             XCTAssertEqual(cmds.count, 1, "\(event) should have exactly our hook")
             XCTAssertTrue(cmds[0].contains(HooksInstaller.marker))
@@ -49,13 +49,16 @@ final class HooksInstallerTests: XCTestCase {
 
         // Untouched user config
         XCTAssertEqual(root["model"] as? String, "opus")
-        XCTAssertEqual(commands(in: hookEntries(root, "PreToolUse")), ["/usr/local/bin/lint"])
 
-        // User Notification hook kept, ours appended
-        let notificationCommands = commands(in: hookEntries(root, "Notification"))
-        XCTAssertEqual(notificationCommands.count, 2)
-        XCTAssertEqual(notificationCommands[0], "say 'user hook'")
-        XCTAssertTrue(notificationCommands[1].contains(HooksInstaller.marker))
+        // User hooks kept first (matcher and all), ours appended after
+        for (event, userCommand) in [("Notification", "say 'user hook'"),
+                                     ("PreToolUse", "/usr/local/bin/lint")] {
+            let cmds = commands(in: hookEntries(root, event))
+            XCTAssertEqual(cmds.count, 2, event)
+            XCTAssertEqual(cmds[0], userCommand, event)
+            XCTAssertTrue(cmds[1].contains(HooksInstaller.marker), event)
+        }
+        XCTAssertEqual(hookEntries(root, "PreToolUse").first?["matcher"] as? String, "Bash")
 
         // Stop added fresh
         XCTAssertEqual(commands(in: hookEntries(root, "Stop")).count, 1)
@@ -67,6 +70,7 @@ final class HooksInstallerTests: XCTestCase {
         let root = try json(twice)
         XCTAssertEqual(commands(in: hookEntries(root, "Notification")).count, 1)
         XCTAssertEqual(commands(in: hookEntries(root, "Stop")).count, 1)
+        XCTAssertEqual(commands(in: hookEntries(root, "PreToolUse")).count, 1)
     }
 
     func testInstallThrowsOnMalformedSettingsWithoutWriting() {
@@ -96,6 +100,7 @@ final class HooksInstallerTests: XCTestCase {
 
         XCTAssertEqual(commands(in: hookEntries(root, "Notification")), ["say 'user hook'"])
         XCTAssertTrue(hookEntries(root, "Stop").isEmpty)
+        XCTAssertTrue(hookEntries(root, "PreToolUse").isEmpty)
     }
 
     func testRemoveOnCleanSettingsIsNoOp() throws {
@@ -136,8 +141,21 @@ final class HookEventParserTests: XCTestCase {
         XCTAssertEqual(event?.signal?.kind, .turnCompleted)
     }
 
+    /// PreToolUse fires when a tool starts EXECUTING — the exact signal that
+    /// an approved (or auto-approved) tool is running, not waiting.
+    func testParsesPreToolUseEvent() {
+        let line = """
+        {"session_id":"abc-123","hook_event_name":"PreToolUse",\
+        "tool_name":"Bash","tool_input":{"command":"xcodebuild"}}
+        """
+        let event = HookEventParser.parse(line: Data(line.utf8))
+        XCTAssertEqual(event?.signal?.sessionID, "abc-123")
+        XCTAssertEqual(event?.signal?.kind, .toolStarted)
+        XCTAssertEqual(event?.signal?.detail, "Bash")
+    }
+
     func testIgnoresUnknownEventsAndGarbage() {
-        XCTAssertNil(HookEventParser.parse(line: Data("{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"x\"}".utf8)))
+        XCTAssertNil(HookEventParser.parse(line: Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"x\"}".utf8)))
         XCTAssertNil(HookEventParser.parse(line: Data("garbage".utf8)))
         XCTAssertNil(HookEventParser.parse(line: Data()))
     }
