@@ -660,8 +660,7 @@ struct SessionRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .contentShape(Rectangle())
-        .background(hovering ? Color.primary.opacity(0.07) : .clear,
-                    in: RoundedRectangle(cornerRadius: 6))
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 6))
         .onHover { hovering = $0 }
         .help("Click to jump to this session")
         .accessibilityElement(children: .ignore)
@@ -684,6 +683,15 @@ struct SessionRowView: View {
         }
     }
 
+    /// Waiting rows carry a soft amber wash so the one row that needs a
+    /// human reads before the dots do; hover still darkens any row.
+    private var rowBackground: Color {
+        if row.state == .waitingForInput {
+            return Color.yellow.opacity(hovering ? 0.22 : 0.13)
+        }
+        return hovering ? Color.primary.opacity(0.07) : .clear
+    }
+
     private var elapsedText: String? {
         guard let start = row.turnStartedAt else { return nil }
         // Finished turns show their frozen duration; anything else counts up.
@@ -695,8 +703,9 @@ struct SessionRowView: View {
         }
         let seconds = Int(end.timeIntervalSince(start))
         guard seconds > 0 else { return nil }
+        // Whole minutes past the first one: "6m 0s"/"6m 32s" flickered a new
+        // value every refresh, which reads as motion where nothing happened.
         if seconds < 60 { return "\(seconds)s" }
-        if seconds < 600 { return "\(seconds / 60)m \(seconds % 60)s" }
         if seconds < 3600 { return "\(seconds / 60)m" }
         return "\(seconds / 3600)h \((seconds % 3600) / 60)m"
     }

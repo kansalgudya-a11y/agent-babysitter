@@ -30,8 +30,8 @@ struct StatsView: View {
         case today = "Today"
         case week = "Week"
         case month = "Month"
-        case threeMonths = "3 months"
-        case allTime = "All time"
+        case threeMonths = "3 mo"
+        case allTime = "All"
         var id: String { rawValue }
 
         var days: Int? {
@@ -72,7 +72,7 @@ struct StatsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 340)
+                .frame(width: 290)
             }
 
             HStack(alignment: .top, spacing: 16) {
@@ -231,23 +231,17 @@ struct StatsView: View {
         }
     }
 
-    private var costByAgent: [String: Double] {
-        selectedDays.reduce(into: [:]) { totals, day in
-            for (agent, dollars) in day.byAgent { totals[agent, default: 0] += dollars }
-        }
+    /// Sub-cent entries render as a wall of "~$0.00" rows on quiet days —
+    /// drop them; a section with nothing real to say disappears entirely.
+    private func summed(_ keyPath: KeyPath<DayStat, [String: Double]>) -> [String: Double] {
+        selectedDays.reduce(into: [String: Double]()) { totals, day in
+            for (key, dollars) in day[keyPath: keyPath] { totals[key, default: 0] += dollars }
+        }.filter { $0.value >= 0.005 }
     }
 
-    var costByProject: [String: Double] {
-        selectedDays.reduce(into: [:]) { totals, day in
-            for (project, dollars) in day.byProject { totals[project, default: 0] += dollars }
-        }
-    }
-
-    private var costByModel: [String: Double] {
-        selectedDays.reduce(into: [:]) { totals, day in
-            for (modelID, dollars) in day.byModel { totals[modelID, default: 0] += dollars }
-        }
-    }
+    private var costByAgent: [String: Double] { summed(\.byAgent) }
+    var costByProject: [String: Double] { summed(\.byProject) }
+    private var costByModel: [String: Double] { summed(\.byModel) }
 
     // MARK: - Pieces
 
