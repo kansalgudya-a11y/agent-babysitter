@@ -102,4 +102,36 @@ final class PaceAlertPlannerTests: XCTestCase {
         let outcome = plan(["claude-code": onPace(resetsInMinutes: -5)])
         XCTAssertTrue(outcome.alerts.isEmpty)
     }
+
+    /// The planner must receive RAW snapshots — this pins the exhaustion math
+    /// for a stale reading so a pace-corrected percent sneaking in (which
+    /// would double-count the pace) fails the assertion.
+    func testStaleReadingProjectsFromTheRawPace() {
+        // Window 300m, resets in 150m => started 150m ago. Captured 30m ago
+        // (elapsed 120m) at 60%: pace exhausts at 200m => 100m before reset.
+        let outcome = plan(["claude-code": onPace(used: 60, capturedMinutesAgo: 30,
+                                                  resetsInMinutes: 150)])
+        XCTAssertEqual(outcome.alerts.count, 1)
+        XCTAssertEqual(outcome.alerts[0].resetsAt
+            .timeIntervalSince(outcome.alerts[0].exhaustionAt), 100 * 60, accuracy: 1)
+        // The banner's percent is the pace-corrected estimate (150/120 · 60).
+        XCTAssertEqual(outcome.alerts[0].usedPercent, 75, accuracy: 0.01)
+    }
+
+    func testReadingsOlderThanTheCeilingStayQuiet() {
+        // Same alarming pace, but the reading is 2h old — the pace is stale
+        // news, not a live warning. (Weekly windows especially: without this
+        // a Friday reading could fire on Monday.)
+        let outcome = plan(["claude-code": onPace(used: 60, capturedMinutesAgo: 120,
+                                                  resetsInMinutes: 30)])
+        XCTAssertTrue(outcome.alerts.isEmpty)
+    }
+
+    func testBandOpensAboveThresholdWhenAskedTo() {
+        // AppModel passes threshold 101 when the reactive alert is off: 85%
+        // on a bad pace must then still warn — nobody else will.
+        let limit = onPace(used: 85)
+        XCTAssertTrue(plan(["claude-code": limit]).alerts.isEmpty)   // handoff
+        XCTAssertEqual(plan(["claude-code": limit], threshold: 101).alerts.count, 1)
+    }
 }

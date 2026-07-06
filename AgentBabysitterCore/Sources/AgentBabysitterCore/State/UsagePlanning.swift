@@ -85,6 +85,10 @@ public enum PaceAlertPlanner {
     public static let minimumUsedPercent = 30.0
     /// …and only when it lands meaningfully before the reset.
     public static let minimumShortfall: TimeInterval = 10 * 60
+    /// A pace is only as fresh as its reading: weekly snapshots stay
+    /// un-expired for days, so without this ceiling a Friday reading could
+    /// fire a "still burning" banner on Monday.
+    public static let maximumStaleness: TimeInterval = 60 * 60
 
     /// One warning per agent per window (5h and weekly independently),
     /// deduped by reset time exactly like UsageAlertPlanner.
@@ -126,15 +130,22 @@ public enum PaceAlertPlanner {
         return Outcome(alerts: alerts, alertedFiveHour: fiveHour, alertedWeekly: weekly)
     }
 
+    /// Takes the RAW snapshot: projectedExhaustion extrapolates from
+    /// (usedPercent, capturedAt) itself, so feeding it a pace-corrected
+    /// percent would double-count the correction. The band comparison uses
+    /// the corrected estimate — that's the number the reactive planner (and
+    /// the menu) sees, so the handoff at `threshold` has no seam.
     private static func evaluate(agentID: String, snapshot: UsageLimitSnapshot,
                                  isWeekly: Bool, threshold: Double,
                                  now: Date) -> Alert? {
         guard let used = snapshot.usedPercent,
-              used >= minimumUsedPercent, used < threshold,
               let resets = snapshot.resetsAt,
+              now.timeIntervalSince(snapshot.capturedAt) <= maximumStaleness,
               let exhaustion = UsageForecast.projectedExhaustion(snapshot, now: now),
               resets.timeIntervalSince(exhaustion) >= minimumShortfall else { return nil }
-        return Alert(agentID: agentID, isWeekly: isWeekly, usedPercent: used,
+        let current = UsageForecast.estimatedCurrentPercent(snapshot, now: now) ?? used
+        guard current >= minimumUsedPercent, current < threshold else { return nil }
+        return Alert(agentID: agentID, isWeekly: isWeekly, usedPercent: current,
                      exhaustionAt: exhaustion, resetsAt: resets)
     }
 }

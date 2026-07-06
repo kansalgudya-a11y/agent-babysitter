@@ -359,10 +359,17 @@ struct MenuContent: View {
                     .font(.caption2)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            // Same noise floor as PaceAlertPlanner — the menu must not paint
+            // red for a state the notification path classifies as noise.
             if let limit = entry.limit, let resets = limit.resetsAt,
-               let exhaustion = UsageForecast.projectedExhaustion(limit) {
+               let exhaustion = UsageForecast.projectedExhaustion(limit),
+               (limit.usedPercent ?? 0) >= PaceAlertPlanner.minimumUsedPercent {
                 let early = resets.timeIntervalSince(exhaustion)
-                Text("on pace to hit the limit at \(NotificationManager.clockTime(exhaustion))")
+                // Snapshot renders pin the wall-clock text: absolute times
+                // change every run and flip format at midnight.
+                let at = AppModel.isSnapshotMode ? "2:14 PM"
+                    : NotificationManager.clockTime(exhaustion)
+                Text("on pace to hit the limit at \(at) (~\(Self.humanDuration(early)) early)")
                     .font(.caption2)
                     .foregroundStyle(early >= 3600 ? .red : .orange)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -386,6 +393,14 @@ struct MenuContent: View {
             var text = "\(entry.name), \(Int(used)) percent of the \(windowName(limit.windowMinutes)) used"
             if let resets = limit.resetsAt, resets > Date() {
                 text += ", resets in \(Self.humanDuration(resets.timeIntervalSinceNow))"
+            }
+            // The pace caption is drawn inside this ignored-children element,
+            // so VoiceOver only hears the projection if it's spoken here.
+            if let resets = limit.resetsAt,
+               let exhaustion = UsageForecast.projectedExhaustion(limit),
+               (limit.usedPercent ?? 0) >= PaceAlertPlanner.minimumUsedPercent {
+                let early = resets.timeIntervalSince(exhaustion)
+                text += ", on pace to hit the limit \(Self.humanDuration(early)) before it resets"
             }
             return text
         }

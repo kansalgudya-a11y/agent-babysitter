@@ -112,13 +112,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func deliverPaceWarning(agentName: String, agentID: String,
                             usedPercent: Double, exhaustionAt: Date,
                             resetsAt: Date, isWeekly: Bool,
-                            windowMinutes: Int = 300) {
+                            windowMinutes: Int) {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
         let kind = isWeekly ? "weekly" : "primary"
         let window = isWeekly ? "weekly" : Self.windowLabel(minutes: windowMinutes)
-        let early = Int(resetsAt.timeIntervalSince(exhaustionAt) / 60)
-        let earlyText = early >= 60 ? "\(early / 60)h \(early % 60)m" : "\(early)m"
+        let earlyText = MenuContent.humanDuration(resetsAt.timeIntervalSince(exhaustionAt))
         content.body = "\(agentName) is at \(Int(usedPercent))% and on pace to hit its "
             + "\(window) limit at \(Self.clockTime(exhaustionAt)) — "
             + "\(earlyText) before it resets."
@@ -127,18 +126,37 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                          content: content, trigger: nil))
     }
 
-    /// "2:14 PM" today, "Thu 2:14 PM" beyond it — enough precision for a
-    /// heads-up without a date ribbon.
-    static func clockTime(_ date: Date) -> String {
+    // Cached: clockTime renders in the menu body on the 2s refresh tick, and
+    // DateFormatter construction (especially template resolution) is the
+    // expensive part — same reasoning as Currency's formatterCache.
+    private static let todayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = .current
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE j:mm")
+        return formatter
+    }()
+    private static let farFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d, j:mm")
+        return formatter
+    }()
+
+    /// "2:14 PM" today, "Thu 2:14 PM" within the week, "Jul 21, 2:14 PM"
+    /// beyond — a bare weekday more than ~6 days out reads as the wrong week
+    /// (reachable via monthly windows like Cursor's).
+    static func clockTime(_ date: Date, now: Date = Date()) -> String {
         if Calendar.current.isDateInToday(date) {
-            formatter.timeStyle = .short
-            formatter.dateStyle = .none
-        } else {
-            formatter.setLocalizedDateFormatFromTemplate("EEE j:mm")
+            return Self.todayFormatter.string(from: date)
         }
-        return formatter.string(from: date)
+        if date.timeIntervalSince(now) < 6 * 86_400 {
+            return Self.weekdayFormatter.string(from: date)
+        }
+        return Self.farFormatter.string(from: date)
     }
 
     /// "Agent Babysitter 0.7.0 is available." Tapping it (or "Update now")

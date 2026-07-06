@@ -1049,26 +1049,20 @@ final class AppModel: ObservableObject {
             .filter { $0.resetsAt.map { $0 > Date() } ?? true }
             .compactMap(\.usedPercent).max()
         guard !notificationsMuted else { return }
-        deliverPaceWarnings(effective)
+        // RAW snapshots on purpose: the pace math extrapolates from
+        // (usedPercent, capturedAt) itself — the `effective` map's corrected
+        // percent with the old capturedAt would double-count the pace.
+        deliverPaceWarnings(limits)
         guard notifyLimit else { return }
         let outcome = UsageAlertPlanner.plan(limits: effective,
                                              threshold: limitAlertThreshold,
                                              alertedFiveHour: alertedFiveHour,
                                              alertedWeekly: alertedWeekly)
-        if outcome.alertedFiveHour != alertedFiveHour {
-            alertedFiveHour = outcome.alertedFiveHour
-            UserDefaults.standard.set(alertedFiveHour.mapValues(\.timeIntervalSince1970),
-                                      forKey: "alertedFiveHour")
-        }
-        if outcome.alertedWeekly != alertedWeekly {
-            alertedWeekly = outcome.alertedWeekly
-            UserDefaults.standard.set(alertedWeekly.mapValues(\.timeIntervalSince1970),
-                                      forKey: "alertedWeekly")
-        }
+        persistAlerted(outcome.alertedFiveHour, into: &alertedFiveHour, key: "alertedFiveHour")
+        persistAlerted(outcome.alertedWeekly, into: &alertedWeekly, key: "alertedWeekly")
         for alert in outcome.alerts {
-            let name = installedAgents.first { $0.id == alert.agentID }?.name
-                ?? adapters.first { $0.id == alert.agentID }?.displayName ?? alert.agentID
-            notificationManager.deliverLimitAlert(agentName: name, agentID: alert.agentID,
+            notificationManager.deliverLimitAlert(agentName: agentDisplayName(alert.agentID),
+                                                  agentID: alert.agentID,
                                                   usedPercent: alert.usedPercent,
                                                   resetsAt: alert.resetsAt,
                                                   windowMinutes: usageLimits[alert.agentID]?.windowMinutes ?? 300,
@@ -1077,33 +1071,44 @@ final class AppModel: ObservableObject {
     }
 
     /// The predictive counterpart: warns while still below the threshold when
-    /// the pace says the window won't survive to its reset.
-    private func deliverPaceWarnings(_ effective: [String: UsageLimitSnapshot]) {
+    /// the pace says the window won't survive to its reset. When the reactive
+    /// alert is off there is no one to hand off to above the threshold, so
+    /// the pace band opens all the way up — otherwise the user who opted
+    /// INTO predictive warnings would go silent exactly when danger peaks.
+    private func deliverPaceWarnings(_ limits: [String: UsageLimitSnapshot]) {
         guard notifyPace else { return }
-        let outcome = PaceAlertPlanner.plan(limits: effective,
-                                            threshold: limitAlertThreshold,
+        let outcome = PaceAlertPlanner.plan(limits: limits,
+                                            threshold: notifyLimit ? limitAlertThreshold : 101,
                                             alertedFiveHour: paceAlertedFiveHour,
                                             alertedWeekly: paceAlertedWeekly)
-        if outcome.alertedFiveHour != paceAlertedFiveHour {
-            paceAlertedFiveHour = outcome.alertedFiveHour
-            UserDefaults.standard.set(paceAlertedFiveHour.mapValues(\.timeIntervalSince1970),
-                                      forKey: "paceAlertedFiveHour")
-        }
-        if outcome.alertedWeekly != paceAlertedWeekly {
-            paceAlertedWeekly = outcome.alertedWeekly
-            UserDefaults.standard.set(paceAlertedWeekly.mapValues(\.timeIntervalSince1970),
-                                      forKey: "paceAlertedWeekly")
-        }
+        persistAlerted(outcome.alertedFiveHour, into: &paceAlertedFiveHour,
+                       key: "paceAlertedFiveHour")
+        persistAlerted(outcome.alertedWeekly, into: &paceAlertedWeekly,
+                       key: "paceAlertedWeekly")
         for alert in outcome.alerts {
-            let name = installedAgents.first { $0.id == alert.agentID }?.name
-                ?? adapters.first { $0.id == alert.agentID }?.displayName ?? alert.agentID
-            notificationManager.deliverPaceWarning(agentName: name, agentID: alert.agentID,
+            notificationManager.deliverPaceWarning(agentName: agentDisplayName(alert.agentID),
+                                                   agentID: alert.agentID,
                                                    usedPercent: alert.usedPercent,
                                                    exhaustionAt: alert.exhaustionAt,
                                                    resetsAt: alert.resetsAt,
                                                    isWeekly: alert.isWeekly,
                                                    windowMinutes: usageLimits[alert.agentID]?.windowMinutes ?? 300)
         }
+    }
+
+    /// One copy of the compare/assign/UserDefaults dance the four alerted-
+    /// window dictionaries all share (written only when changed — the 2s
+    /// tick must not churn plists).
+    private func persistAlerted(_ new: [String: Date], into current: inout [String: Date],
+                                key: String) {
+        guard new != current else { return }
+        current = new
+        UserDefaults.standard.set(new.mapValues(\.timeIntervalSince1970), forKey: key)
+    }
+
+    private func agentDisplayName(_ id: String) -> String {
+        installedAgents.first { $0.id == id }?.name
+            ?? adapters.first { $0.id == id }?.displayName ?? id
     }
 
     // MARK: - Preferences plumbing
