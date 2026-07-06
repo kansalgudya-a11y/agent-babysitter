@@ -91,8 +91,9 @@ enum UISnapshots {
 
         func limit(_ used: Double?, plan: String?, resetsInMinutes: Double = 135,
                    weekly: Double? = nil, live: Bool = false,
-                   capturedMinutesAgo: Double = 2) -> UsageLimitSnapshot {
-            UsageLimitSnapshot(usedPercent: used, windowMinutes: 300,
+                   capturedMinutesAgo: Double = 2,
+                   windowMinutes: Int = 300) -> UsageLimitSnapshot {
+            UsageLimitSnapshot(usedPercent: used, windowMinutes: windowMinutes,
                                resetsAt: now.addingTimeInterval(resetsInMinutes * 60),
                                capturedAt: now.addingTimeInterval(-capturedMinutesAgo * 60),
                                plan: plan,
@@ -137,8 +138,13 @@ enum UISnapshots {
                 summary: MenuBarSummary(worstState: .working, activeCount: 2),
                 usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true),
                               "codex": limit(0, plan: "plus", resetsInMinutes: -5),
-                              "cursor": limit(5, plan: "Free", live: true),
-                              "manus": limit(8, plan: "Free · 1,276 credits", live: true),
+                              // Cursor's window is the monthly billing cycle,
+                              // Manus's the daily credit refresh — both pace.
+                              "cursor": limit(42, plan: "Pro", resetsInMinutes: 12 * 24 * 60,
+                                              live: true, windowMinutes: 30 * 24 * 60),
+                              "manus": limit(62, plan: "Free · 1,276 credits",
+                                             resetsInMinutes: 10 * 60,
+                                             live: true, windowMinutes: 24 * 60),
                               "antigravity": limit(5, plan: "Google AI Pro")],
                 installedAgents: allInstalled + [("cursor", "Cursor"), ("manus", "Manus"),
                                                  ("gemini", "Gemini")],
@@ -168,7 +174,9 @@ enum UISnapshots {
                               "codex": limit(76, plan: "plus", weekly: 40,
                                              capturedMinutesAgo: 55),
                               "antigravity": limit(nil, plan: "Google AI Pro"),
-                              "antigravity-ide": limit(5, plan: "Google AI Pro"),
+                              // Pace-able reading on a CLOSED app: the pace
+                              // line must stay hidden (running apps only).
+                              "antigravity-ide": limit(65, plan: "Google AI Pro"),
                               "antigravity-cli": limit(5, plan: "Google AI Pro")],
                 installedAgents: allInstalled,
                 runningAgentIDs: ["claude-code", "codex"],

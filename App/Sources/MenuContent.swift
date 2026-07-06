@@ -361,8 +361,9 @@ struct MenuContent: View {
             }
             // Same floors as the pace notification (user-set in Preferences)
             // — the menu must not paint red for a state the notification
-            // path classifies as noise.
-            if let limit = entry.limit {
+            // path classifies as noise. Closed apps aren't burning anything,
+            // so their pace is history, not a prediction: running only.
+            if entry.running, let limit = entry.limit {
                 paceCaption(limit, floor: model.paceFiveHourFloor, prefix: "")
                 if let weekly = limit.weeklyWindow {
                     paceCaption(weekly, floor: model.paceWeeklyFloor, prefix: "week: ")
@@ -419,10 +420,13 @@ struct MenuContent: View {
             }
             // The pace captions are drawn inside this ignored-children
             // element, so VoiceOver only hears them if they're spoken here.
-            text += paceSentence(limit, floor: model.paceFiveHourFloor, name: "")
-            if let weekly = limit.weeklyWindow {
-                text += paceSentence(weekly, floor: model.paceWeeklyFloor,
-                                     name: "weekly window ")
+            // Running apps only — mirrors the visible captions.
+            if entry.running {
+                text += paceSentence(limit, floor: model.paceFiveHourFloor, name: "")
+                if let weekly = limit.weeklyWindow {
+                    text += paceSentence(weekly, floor: model.paceWeeklyFloor,
+                                         name: "weekly window ")
+                }
             }
             return text
         }

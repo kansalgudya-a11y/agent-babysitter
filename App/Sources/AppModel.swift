@@ -1096,10 +1096,13 @@ final class AppModel: ObservableObject {
     /// INTO predictive warnings would go silent exactly when danger peaks.
     private func deliverPaceWarnings(_ limits: [String: UsageLimitSnapshot]) {
         guard notifyPace else { return }
+        // Running agents only — a closed app's pace is history, not a
+        // prediction (mirrors the menu captions).
+        let burning = limits.filter { runningAgentIDs.contains($0.key) }
         // The sliders gate the menu line from as low as 0%, but a BANNER for
         // an early-window burst is noise — alerts keep the hard 30% floor,
         // which the slider can raise but not lower.
-        let outcome = PaceAlertPlanner.plan(limits: limits,
+        let outcome = PaceAlertPlanner.plan(limits: burning,
                                             threshold: notifyLimit ? limitAlertThreshold : 101,
                                             minimumFiveHourPercent: max(PaceAlertPlanner.minimumUsedPercent, paceFiveHourFloor),
                                             minimumWeeklyPercent: max(PaceAlertPlanner.minimumUsedPercent, paceWeeklyFloor),
