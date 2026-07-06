@@ -1103,7 +1103,9 @@ final class AppModel: ObservableObject {
         // an early-window burst is noise — alerts keep the hard 30% floor,
         // which the slider can raise but not lower.
         let outcome = PaceAlertPlanner.plan(limits: burning,
-                                            threshold: notifyLimit ? limitAlertThreshold : 101,
+                                            // No reactive alert to hand off to → pace covers the
+                                            // whole band up to 100% (unbounded, not a 101 sentinel).
+                                            threshold: notifyLimit ? limitAlertThreshold : .infinity,
                                             minimumFiveHourPercent: max(PaceAlertPlanner.minimumUsedPercent, paceFiveHourFloor),
                                             minimumWeeklyPercent: max(PaceAlertPlanner.minimumUsedPercent, paceWeeklyFloor),
                                             alertedFiveHour: paceAlertedFiveHour,

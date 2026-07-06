@@ -86,10 +86,9 @@ public enum PaceAlertPlanner {
     public static let minimumUsedPercent = 30.0
     /// …and only when it lands meaningfully before the reset.
     public static let minimumShortfall: TimeInterval = 10 * 60
-    /// A pace is only as fresh as its reading: weekly snapshots stay
-    /// un-expired for days, so without this ceiling a Friday reading could
-    /// fire a "still burning" banner on Monday.
-    public static let maximumStaleness: TimeInterval = 60 * 60
+    // Staleness is enforced inside UsageForecast now, so the menu caption and
+    // this planner refuse an aged reading identically — see
+    // UsageForecast.maximumStaleness.
 
     /// One warning per agent per window (5h and weekly independently),
     /// deduped by reset time exactly like UsageAlertPlanner. The floors are
@@ -137,7 +136,6 @@ public enum PaceAlertPlanner {
                                  minimumUsed: Double, now: Date) -> Alert? {
         guard let used = snapshot.usedPercent,
               let resets = snapshot.resetsAt,
-              now.timeIntervalSince(snapshot.capturedAt) <= maximumStaleness,
               let exhaustion = UsageForecast.projectedExhaustion(snapshot, now: now),
               resets.timeIntervalSince(exhaustion) >= minimumShortfall else { return nil }
         let current = UsageForecast.estimatedCurrentPercent(snapshot, now: now) ?? used

@@ -128,11 +128,11 @@ final class PaceAlertPlannerTests: XCTestCase {
     }
 
     func testBandOpensAboveThresholdWhenAskedTo() {
-        // AppModel passes threshold 101 when the reactive alert is off: 85%
-        // on a bad pace must then still warn — nobody else will.
+        // AppModel passes an unbounded threshold when the reactive alert is
+        // off: 85% on a bad pace must then still warn — nobody else will.
         let limit = onPace(used: 85)
         XCTAssertTrue(plan(["claude-code": limit]).alerts.isEmpty)   // handoff
-        XCTAssertEqual(plan(["claude-code": limit], threshold: 101).alerts.count, 1)
+        XCTAssertEqual(plan(["claude-code": limit], threshold: .infinity).alerts.count, 1)
     }
 
     func testUserFloorsGateEachWindowIndependently() {

@@ -15,6 +15,12 @@ public enum UsageForecast {
     static let minimumPercent = 3.0
     /// A fresh reading is truth; only estimate once it has actually aged.
     static let staleAfter: TimeInterval = 10 * 60
+    /// A projection is only as trustworthy as the reading behind it. Past
+    /// this age the pace is history, not a forecast — a Friday reading must
+    /// not project a "hit the limit" line all weekend. Enforced by both
+    /// forecast calls so every consumer (menu caption AND notification)
+    /// inherits the same freshness policy.
+    public static let maximumStaleness: TimeInterval = 60 * 60
 
     /// The pace-corrected "probably right now" percentage, or nil when the
     /// raw reading should be shown as-is (fresh, unmeasurable, or expired).
@@ -37,7 +43,8 @@ public enum UsageForecast {
     public static func projectedExhaustion(_ snapshot: UsageLimitSnapshot,
                                            now: Date = Date()) -> Date? {
         guard let used = snapshot.usedPercent, used >= minimumPercent,
-              let resets = snapshot.resetsAt, resets > now else { return nil }
+              let resets = snapshot.resetsAt, resets > now,
+              now.timeIntervalSince(snapshot.capturedAt) <= maximumStaleness else { return nil }
         let windowStart = resets.addingTimeInterval(-Double(snapshot.windowMinutes) * 60)
         let elapsedAtCapture = snapshot.capturedAt.timeIntervalSince(windowStart)
         guard elapsedAtCapture >= minimumElapsed else { return nil }
@@ -54,7 +61,8 @@ public enum UsageForecast {
     public static func projectedPercentAtReset(_ snapshot: UsageLimitSnapshot,
                                                now: Date = Date()) -> Double? {
         guard let used = snapshot.usedPercent, used >= minimumPercent,
-              let resets = snapshot.resetsAt, resets > now else { return nil }
+              let resets = snapshot.resetsAt, resets > now,
+              now.timeIntervalSince(snapshot.capturedAt) <= maximumStaleness else { return nil }
         let windowStart = resets.addingTimeInterval(-Double(snapshot.windowMinutes) * 60)
         let elapsedAtCapture = snapshot.capturedAt.timeIntervalSince(windowStart)
         guard elapsedAtCapture >= minimumElapsed else { return nil }

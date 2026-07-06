@@ -374,6 +374,28 @@ struct MenuContent: View {
         .accessibilityLabel(limitAccessibilityLabel(entry))
     }
 
+    /// One reading of the pace, shared by the visible caption and its
+    /// VoiceOver mirror so the two can never drift. `.exhausting` fires the
+    /// warning line, `.landing` the reassuring one, `.none` shows nothing —
+    /// below the user's floor, or no measurable/fresh pace (UsageForecast
+    /// applies the same staleness ceiling the notification path uses).
+    private enum PaceForecast {
+        case exhausting(early: TimeInterval, at: Date)
+        case landing(percent: Int)
+        case none
+    }
+
+    private func paceForecast(_ window: UsageLimitSnapshot, floor: Double) -> PaceForecast {
+        guard (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt else { return .none }
+        if let exhaustion = UsageForecast.projectedExhaustion(window) {
+            return .exhausting(early: resets.timeIntervalSince(exhaustion), at: exhaustion)
+        }
+        if let projected = UsageForecast.projectedPercentAtReset(window), projected <= 100 {
+            return .landing(percent: Int(projected))
+        }
+        return .none
+    }
+
     /// The pace line, always on from the user's floor up — reassuring when
     /// the window outlasts its reset ("on pace for ~62% at reset"), a
     /// warning when it doesn't ("on pace to hit the limit at 2:14 PM").
@@ -381,26 +403,25 @@ struct MenuContent: View {
     @ViewBuilder
     private func paceCaption(_ window: UsageLimitSnapshot, floor: Double,
                              prefix: String) -> some View {
-        if (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt {
-            if let exhaustion = UsageForecast.projectedExhaustion(window) {
-                let early = resets.timeIntervalSince(exhaustion)
-                // Snapshot renders pin the wall-clock text: absolute times
-                // change every run and flip format at midnight.
-                let at = AppModel.isSnapshotMode ? "2:14 PM"
-                    : NotificationManager.clockTime(exhaustion)
-                Text("\(prefix)on pace to hit the limit at \(at) (~\(Self.humanDuration(early)) early)")
-                    .font(.caption2)
-                    .foregroundStyle(early >= 3600 ? .red : .orange)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .help("At the current pace this window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it. You can choose when this line appears in Settings → Notifications.")
-            } else if let projected = UsageForecast.projectedPercentAtReset(window),
-                      projected <= 100 {
-                Text("\(prefix)on pace for ~\(Int(projected))% at reset")
-                    .font(.caption2)
-                    .foregroundStyle(.green)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .help("At the current pace this window lands around \(Int(projected))% when it resets — no limit trouble ahead. You can choose when this line appears in Settings → Notifications.")
-            }
+        switch paceForecast(window, floor: floor) {
+        case .exhausting(let early, let at):
+            // Snapshot renders pin the wall-clock text: absolute times
+            // change every run and flip format at midnight.
+            let clock = AppModel.isSnapshotMode ? "2:14 PM"
+                : NotificationManager.clockTime(at)
+            Text("\(prefix)on pace to hit the limit at \(clock) (~\(Self.humanDuration(early)) early)")
+                .font(.caption2)
+                .foregroundStyle(early >= 3600 ? .red : .orange)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .help("At the current pace this window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it. You can choose when this line appears in Settings → Notifications.")
+        case .landing(let percent):
+            Text("\(prefix)on pace for ~\(percent)% at reset")
+                .font(.caption2)
+                .foregroundStyle(.green)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .help("At the current pace this window lands around \(percent)% when it resets — no limit trouble ahead. You can choose when this line appears in Settings → Notifications.")
+        case .none:
+            EmptyView()
         }
     }
 
@@ -433,20 +454,18 @@ struct MenuContent: View {
         return "\(entry.name), \(limit.plan ?? "plan") plan"
     }
 
-    /// Spoken mirror of paceCaption for VoiceOver — same floors, both moods.
+    /// Spoken mirror of paceCaption for VoiceOver — reads from the same
+    /// paceForecast so the sentence can't drift from the visible line.
     private func paceSentence(_ window: UsageLimitSnapshot, floor: Double,
                               name: String) -> String {
-        guard (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt
-        else { return "" }
-        if let exhaustion = UsageForecast.projectedExhaustion(window) {
-            let early = resets.timeIntervalSince(exhaustion)
+        switch paceForecast(window, floor: floor) {
+        case .exhausting(let early, _):
             return ", \(name)on pace to hit the limit \(Self.humanDuration(early)) before it resets"
+        case .landing(let percent):
+            return ", \(name)on pace for \(percent) percent at reset"
+        case .none:
+            return ""
         }
-        if let projected = UsageForecast.projectedPercentAtReset(window),
-           projected <= 100 {
-            return ", \(name)on pace for \(Int(projected)) percent at reset"
-        }
-        return ""
     }
 
     /// Human name for a usage window, from its length.
@@ -757,6 +776,9 @@ struct SessionRowView: View {
     private var costHelp: String {
         if row.cost.hasUnknownPricing && row.cost.dollars == 0 {
             return "Tokens used this session. No price is shown because this model isn't in the price list — dollars are never guessed."
+        }
+        if row.cost.hasUnknownPricing && row.cost.dollars > 0 {
+            return "At least this much, from the priced models in this session at API list prices — one or more models aren't in the price list, so the real total is higher."
         }
         if row.cost.dollars > 0 {
             return "Estimated from this session's tokens at API list prices. On a subscription plan this isn't an extra charge — it's the value of the usage."

@@ -10,8 +10,14 @@ final class ModelNamesTests: XCTestCase {
         XCTAssertEqual(ModelNames.pretty("claude-3-5-sonnet-20241022"), "Sonnet 3.5")
     }
 
+    func testOpenAIIdsPrettified() {
+        XCTAssertEqual(ModelNames.pretty("gpt-5.5"), "GPT-5.5")
+        XCTAssertEqual(ModelNames.pretty("gpt-5.2-codex"), "GPT-5.2 Codex")
+        XCTAssertEqual(ModelNames.pretty("gpt-5.1-codex-mini"), "GPT-5.1 Codex Mini")
+    }
+
     func testForeignIdsPassThroughUntouched() {
-        XCTAssertEqual(ModelNames.pretty("gpt-5.1-codex"), "gpt-5.1-codex")
+        XCTAssertEqual(ModelNames.pretty("mistral-large"), "mistral-large")
         XCTAssertEqual(ModelNames.pretty("unknown"), "unknown")
     }
 }
