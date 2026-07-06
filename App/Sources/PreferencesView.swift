@@ -336,7 +336,7 @@ struct PreferencesView: View {
                         Text("You're on the latest version (\(version)).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    case .available(let version, let url):
+                    case .available(let version, let url, _):
                         Button("Get \(version)") { updates.openReleasePage(url) }
                             .buttonStyle(.link)
                     case .failed(let message):
@@ -344,6 +344,11 @@ struct PreferencesView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
+                }
+                if case .available(_, _, let notes) = updates.status, let notes {
+                    Text("What's new:\n\(notes)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Button("Copy diagnostics") {
                     let defaults = UserDefaults.standard

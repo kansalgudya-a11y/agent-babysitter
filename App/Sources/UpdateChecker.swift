@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AgentBabysitterCore
 
 /// User-initiated update check against GitHub Releases — fires only when the
 /// button in Settings is pressed, consistent with the app's "no network
@@ -13,7 +14,7 @@ final class UpdateChecker: ObservableObject {
         case idle
         case checking
         case upToDate(String)
-        case available(version: String, url: URL)
+        case available(version: String, url: URL, notes: String?)
         case failed(String)
     }
 
@@ -44,7 +45,8 @@ final class UpdateChecker: ObservableObject {
         }
         let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         if latest.compare(currentVersion, options: .numeric) == .orderedDescending {
-            status = .available(version: latest, url: page)
+            let notes = (root["body"] as? String).flatMap { ReleaseNotesDigest.digest(markdown: $0) }
+            status = .available(version: latest, url: page, notes: notes)
         } else {
             status = .upToDate(currentVersion)
         }

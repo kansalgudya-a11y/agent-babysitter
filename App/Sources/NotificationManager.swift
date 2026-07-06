@@ -91,12 +91,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// "Agent Babysitter 0.7.0 is available." Tapping it (or "Update now")
     /// opens the release page to download the new build. One identifier so a
-    /// newer version replaces an older pending banner.
-    func deliverUpdateAvailable(version: String, url: URL) {
+    /// newer version replaces an older pending banner. `notes` is the
+    /// what's-new digest — shown under the headline (the banner collapses it;
+    /// Notification Center and the expanded banner show every line).
+    func deliverUpdateAvailable(version: String, url: URL, notes: String?) {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
         content.title = "Update available"
-        content.body = "Agent Babysitter \(version) is ready to install. Update now?"
+        content.body = "Agent Babysitter \(version) is ready to install."
+            + (notes.map { "\n\($0)" } ?? "")
         content.userInfo = ["updateURL": url.absoluteString]
         content.categoryIdentifier = "update"
         content.sound = .default

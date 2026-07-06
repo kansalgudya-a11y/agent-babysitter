@@ -379,14 +379,14 @@ final class AppModel: ObservableObject {
         guard Date().timeIntervalSince(last) >= 24 * 3600 else { return }
         defaults.set(Date(), forKey: "lastUpdateCheck")
         await updateChecker.check()
-        guard case .available(let version, let url) = updateChecker.status else { return }
+        guard case .available(let version, let url, let notes) = updateChecker.status else { return }
         // Announce each new version once; don't re-nag daily for one the user
         // has already been told about. Hold the banner during quiet hours —
         // leaving it un-notified so a later check delivers it.
         guard defaults.string(forKey: "lastNotifiedUpdateVersion") != version, !isQuietNow
         else { return }
         defaults.set(version, forKey: "lastNotifiedUpdateVersion")
-        notificationManager.deliverUpdateAvailable(version: version, url: url)
+        notificationManager.deliverUpdateAvailable(version: version, url: url, notes: notes)
     }
 
     /// Keep the display rate live: fetch now and re-fetch on a short cadence
