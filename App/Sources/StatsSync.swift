@@ -27,8 +27,10 @@ enum StatsSync {
         return result
     }
 
-    /// Fingerprint of the last-written payload, to skip no-op writes.
-    private static var lastWrittenHash: Int?
+    /// The exact bytes last written, to skip no-op writes. Compared whole so
+    /// ANY field change (counts, minutes, re-keyed projects) triggers a write —
+    /// a partial hash of just the cost sums missed those.
+    private static var lastWrittenData: Data?
 
     /// Stable per-machine id so this Mac always writes the same file.
     private static var machineID: String {
@@ -52,15 +54,14 @@ enum StatsSync {
         guard let folder else { return }
         let wire = Wire(costByAgent: ownLedger.costByAgent, costByProject: ownLedger.costByProject,
                         sessionCounts: ownLedger.sessionCounts, activeMinutes: ownLedger.activeMinutes)
-        var hasher = Hasher()
-        hasher.combine(ownLedger.costByAgent.count)
-        hasher.combine(ownLedger.costByAgent.values.flatMap { $0.values }.reduce(0, +))
-        hasher.combine(ownLedger.costByProject.values.flatMap { $0.values }.reduce(0, +))
-        let hash = hasher.finalize()
-        guard hash != lastWrittenHash else { return }
-        guard let data = try? JSONEncoder().encode(wire) else { return }
+        // Sorted keys → identical contents always encode to identical bytes, so
+        // the byte-compare below is a true "did anything change" check.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(wire) else { return }
+        guard data != lastWrittenData else { return }
         try? data.write(to: folder.appendingPathComponent("stats-\(machineID).json"))
-        lastWrittenHash = hash
+        lastWrittenData = data
     }
 
     /// A DISPLAY-only view summing this machine's ledger with every sibling's

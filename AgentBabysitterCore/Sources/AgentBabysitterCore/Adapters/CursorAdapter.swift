@@ -18,6 +18,9 @@ public struct CursorAdapter: AgentAdapter {
     public let transcriptRoot: URL
     public var focusBundleIdentifiers: [String] { ["com.todesktop.230313mzl4w4u92"] }
     public var isActivityBased: Bool { true }
+    /// Composer sessions ARE parsed from the db, so a running Cursor whose db
+    /// churns while zero composers parse is real drift — keep it checked.
+    public var sessionsAreParsed: Bool { true }
     public var multiSessionFiles: Bool { true }
 
     public init(appSupport: URL = FileManager.default.homeDirectoryForCurrentUser

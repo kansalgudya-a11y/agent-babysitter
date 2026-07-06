@@ -124,3 +124,53 @@ final class LicenseParsingTests: XCTestCase {
             validateResponse: Data(#"{"valid":false,"error":"expired"}"#.utf8)))
     }
 }
+
+final class BudgetInputTests: XCTestCase {
+
+    func testPlainNumbers() {
+        XCTAssertEqual(BudgetInput.parse("150"), 150)
+        XCTAssertEqual(BudgetInput.parse("12.50"), 12.5, accuracy: 1e-9)
+        XCTAssertEqual(BudgetInput.parse("0"), 0)
+    }
+
+    func testEmptyAndJunkAreOff() {
+        XCTAssertEqual(BudgetInput.parse(""), 0)
+        XCTAssertEqual(BudgetInput.parse("   "), 0)
+        XCTAssertEqual(BudgetInput.parse("abc"), 0)
+    }
+
+    func testCurrencySymbolsAndSpacesStripped() {
+        XCTAssertEqual(BudgetInput.parse("$150"), 150)
+        XCTAssertEqual(BudgetInput.parse("£ 42"), 42)
+        XCTAssertEqual(BudgetInput.parse("20 USD"), 20)
+    }
+
+    func testCommaDecimalAccepted() {
+        XCTAssertEqual(BudgetInput.parse("12,50"), 12.5, accuracy: 1e-9)
+    }
+
+    /// A second separator must NOT make the whole thing unparseable (the old
+    /// code turned "1.2.3" into 0, silently switching the budget OFF). The
+    /// first dot is the decimal point; later dots drop but their digits stay.
+    func testMultipleSeparatorsStayParseable() {
+        XCTAssertEqual(BudgetInput.parse("1.2.3"), 1.23, accuracy: 1e-9)
+        XCTAssertEqual(BudgetInput.parse("1.234.56"), 1.23456, accuracy: 1e-9)
+        XCTAssertEqual(BudgetInput.parse("12..50"), 12.5, accuracy: 1e-9)   // fat-finger double dot
+    }
+
+    func testNeverNegative() {
+        XCTAssertEqual(BudgetInput.parse("-30"), 30)  // stray minus is dropped, not negated
+    }
+
+    func testFormatRoundTrips() {
+        XCTAssertEqual(BudgetInput.format(0), "")        // off shows empty
+        XCTAssertEqual(BudgetInput.format(150), "150")   // whole number, no decimals
+        XCTAssertEqual(BudgetInput.format(12.5), "12.50")
+    }
+
+    func testFormatParseIsStable() {
+        for value: Double in [0, 5, 42, 150, 12.5, 99.99] {
+            XCTAssertEqual(BudgetInput.parse(BudgetInput.format(value)), value, accuracy: 1e-9)
+        }
+    }
+}

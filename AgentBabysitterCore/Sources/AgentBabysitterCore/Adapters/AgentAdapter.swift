@@ -63,6 +63,12 @@ public protocol AgentAdapter: Sendable {
     /// turn-completion notifications are unreliable for these and are
     /// suppressed.
     var isActivityBased: Bool { get }
+    /// True when sessions are PARSED out of the agent's data (so "running +
+    /// files churning + zero sessions parsed" is a real format-drift signal).
+    /// False for pure activity watchers, where zero parsed is normal.
+    /// Defaults to !isActivityBased; Cursor overrides — its state is
+    /// activity-flavored but its sessions are parsed from the database.
+    var sessionsAreParsed: Bool { get }
     /// True when the adapter wants the store's network-flow probe running
     /// for its live sessions (agents whose files don't record completion).
     var usesNetworkActivity: Bool { get }
@@ -91,6 +97,8 @@ public extension AgentAdapter {
     }
 
     var isActivityBased: Bool { false }
+
+    var sessionsAreParsed: Bool { !isActivityBased }
 
     var cliExecutableNames: [String] { [] }
 

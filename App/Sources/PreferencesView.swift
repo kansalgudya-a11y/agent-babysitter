@@ -7,36 +7,6 @@ struct PreferencesView: View {
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateChecker()
     @State private var licenseKeyInput = ""
-    // Budget fields edit through plain strings so typing (incl. decimals) is
-    // smooth — a `value:` number TextField reformats mid-keystroke and fights
-    // the cursor. The model Double is updated on change.
-    @State private var dailyBudgetText = ""
-    @State private var weeklyBudgetText = ""
-
-    @ViewBuilder
-    private func budgetField(_ text: Binding<String>, apply: @escaping (Double) -> Void) -> some View {
-        HStack(spacing: 4) {
-            Text(model.currency.symbol).foregroundStyle(.secondary)
-            TextField("", text: text, prompt: Text("Off"))
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1)
-                .frame(width: 90)
-                .multilineTextAlignment(.trailing)
-                .onChange(of: text.wrappedValue) { _, new in apply(Self.parseBudget(new)) }
-        }
-    }
-
-    static func parseBudget(_ s: String) -> Double {
-        let cleaned = s.replacingOccurrences(of: ",", with: ".")
-            .filter { $0.isNumber || $0 == "." }
-        return max(0, Double(cleaned) ?? 0)
-    }
-
-    static func formatBudget(_ v: Double) -> String {
-        guard v > 0 else { return "" }
-        return v == v.rounded() ? String(Int(v)) : String(format: "%g", v)
-    }
 
     var body: some View {
         TabView {
@@ -65,9 +35,47 @@ struct PreferencesView: View {
             .tabItem { Label("License & Updates", systemImage: "checkmark.seal") }
         }
         .frame(width: 480, height: 420)
-        .onAppear {
-            dailyBudgetText = Self.formatBudget(model.dailyBudget)
-            weeklyBudgetText = Self.formatBudget(model.weeklyBudget)
+    }
+
+    /// A budget amount field. Edits a plain string so typing (incl. decimals)
+    /// is smooth, and applies to the model on a short debounce — so typing
+    /// "150" doesn't briefly set the budget to 1 then 15 (which could fire a
+    /// premature over-budget alert and churn UserDefaults on every keystroke).
+    /// Commits immediately on Return.
+    struct BudgetField: View {
+        let symbol: String
+        let initial: Double
+        let apply: (Double) -> Void
+        @State private var text = ""
+        @State private var debounce: Task<Void, Never>?
+
+        var body: some View {
+            HStack(spacing: 4) {
+                Text(symbol).foregroundStyle(.secondary)
+                TextField("", text: $text, prompt: Text("Off"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+                    .frame(width: 90)
+                    .multilineTextAlignment(.trailing)
+                    .onChange(of: text) { _, new in
+                        debounce?.cancel()
+                        debounce = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            guard !Task.isCancelled else { return }
+                            apply(BudgetInput.parse(new))
+                        }
+                    }
+                    .onSubmit {
+                        debounce?.cancel()
+                        apply(BudgetInput.parse(text))
+                    }
+            }
+            .onAppear { text = BudgetInput.format(initial) }
+            .onDisappear {
+                debounce?.cancel()
+                apply(BudgetInput.parse(text))
+            }
         }
     }
 
@@ -168,13 +176,17 @@ struct PreferencesView: View {
                     }
                 }
                 LabeledContent {
-                    budgetField($dailyBudgetText) { model.dailyBudget = $0 }
+                    BudgetField(symbol: model.currency.symbol, initial: model.dailyBudget) {
+                        model.dailyBudget = $0
+                    }
                 } label: {
                     Text("💸 Daily spend goes over")
                     Text("One heads-up per day when today's estimated cost crosses this. Leave empty to turn off.")
                 }
                 LabeledContent {
-                    budgetField($weeklyBudgetText) { model.weeklyBudget = $0 }
+                    BudgetField(symbol: model.currency.symbol, initial: model.weeklyBudget) {
+                        model.weeklyBudget = $0
+                    }
                 } label: {
                     Text("💸 Weekly spend goes over")
                     Text("Same, for the last 7 days combined.")

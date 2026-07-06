@@ -689,7 +689,7 @@ final class AppModel: ObservableObject {
             lastDebugAgents = debugAgents
             UserDefaults.standard.set(debugAgents, forKey: "debugAgents")
         }
-        self.unreadableAgents = await computeUnreadableAgents(rows: rows)
+        self.unreadableAgents = await computeUnreadableAgents()
         recordCostHistory(todayCost.dollars)
         await recordStats(rows: rows)
         adaptRefreshCadence()
@@ -903,7 +903,7 @@ final class AppModel: ObservableObject {
     /// agents (Antigravity/Gemini/Manus) — they have no turns to parse, so
     /// "zero parsed" is normal, not drift; (3) throttled to ~30s since the
     /// directory scan isn't cheap.
-    private func computeUnreadableAgents(rows: [SessionRow]) async -> [UnreadableAgent] {
+    private func computeUnreadableAgents() async -> [UnreadableAgent] {
         let now = Date()
         guard now.timeIntervalSince(lastHealthCheck) >= 30 else { return lastHealthResult }
         lastHealthCheck = now
@@ -911,7 +911,7 @@ final class AppModel: ObservableObject {
         let tracked = await store.trackedSessionCounts()
         var flagged: [UnreadableAgent] = []
         for adapter in adapters
-        where running.contains(adapter.id) && !adapter.isActivityBased {
+        where running.contains(adapter.id) && adapter.sessionsAreParsed {
             let recent = Self.dataRecentlyModified(adapter.transcriptRoot)
             if AgentHealth.status(running: true, dataRecentlyModified: recent,
                                   sessionsParsed: tracked[adapter.id] ?? 0) == .cannotRead {
