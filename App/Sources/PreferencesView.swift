@@ -82,10 +82,12 @@ struct PreferencesView: View {
     @ViewBuilder private var generalTab: some View {
             Section("General") {
                 Toggle("Start Agent Babysitter when I log in", isOn: $model.launchAtLogin)
+                    .hapticTick(on: model.launchAtLogin)
                 Toggle(isOn: $model.hotKeyEnabled) {
                     Text("Jump to the neediest session with a hotkey")
                     Text("From anywhere: focuses the session that's waiting for you (or stuck, or working).")
                 }
+                .hapticTick(on: model.hotKeyEnabled)
                 if model.hotKeyEnabled {
                     Picker("Hotkey", selection: $model.hotKeyCombo) {
                         ForEach(HotKeyManager.combos, id: \.id) { combo in
@@ -130,6 +132,7 @@ struct PreferencesView: View {
                     Text("Sync stats across my Macs (iCloud Drive)")
                     Text("Merges the stats totals from each of your Macs via a small file in iCloud Drive, so \"all time\" spans every machine. Only aggregate numbers — no session content — are stored.")
                 }
+                .hapticTick(on: model.syncStatsViaICloud)
                 Button("Show the feature tour") {
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: "welcome")
@@ -153,23 +156,28 @@ struct PreferencesView: View {
                     Text("🟡 An agent needs my input")
                     Text("A question or a permission prompt is waiting for you.")
                 }
+                .hapticTick(on: model.notifyWaiting)
                 Toggle(isOn: $model.notifyDone) {
                     Text("🔵 An agent finishes")
                     Text("Its reply is ready to read.")
                 }
+                .hapticTick(on: model.notifyDone)
                 Toggle(isOn: $model.notifyStalled) {
                     Text("🔴 An agent looks stuck")
                     Text("Mid-task but silent for too long (time set below).")
                 }
+                .hapticTick(on: model.notifyStalled)
                 Toggle(isOn: $model.notifyLimit) {
                     Text("⚠️ An agent nears its 5-hour limit")
                     Text("One heads-up per window when usage crosses the level below, so a long task doesn't burn the whole window unnoticed.")
                 }
+                .hapticTick(on: model.notifyLimit)
                 if model.notifyLimit {
                     HStack {
                         Slider(value: $model.limitAlertThreshold, in: 50...95, step: 5) {
                             Text("Warn at")
                         }
+                        .hapticTick(on: model.limitAlertThreshold)
                         Text("\(Int(model.limitAlertThreshold))%")
                             .monospacedDigit()
                             .frame(width: 44, alignment: .trailing)
@@ -202,6 +210,7 @@ struct PreferencesView: View {
                     Text("Quiet hours")
                     Text("Silence every banner during these hours — the menu keeps updating live, you just won't get pinged overnight.")
                 }
+                .hapticTick(on: model.quietHoursEnabled)
                 if model.quietHoursEnabled {
                     HStack {
                         Picker("From", selection: $model.quietStartHour) {
@@ -219,6 +228,7 @@ struct PreferencesView: View {
                     Slider(value: $model.stallThresholdMinutes, in: 1...30, step: 1) {
                         Text("Consider an agent stuck after")
                     }
+                    .hapticTick(on: model.stallThresholdMinutes)
                     Text("\(Int(model.stallThresholdMinutes)) min")
                         .monospacedDigit()
                         .frame(width: 52, alignment: .trailing)
@@ -236,14 +246,17 @@ struct PreferencesView: View {
                     Text("Exact status from Claude Code")
                     Text("Uses Claude Code's own notifications so \"needs you\" and \"done\" are exact instead of inferred. Adds one small entry to Claude Code's settings; your other settings are never touched, and turning this off removes only our entry.")
                 }
+                .hapticTick(on: model.precisionModeEnabled)
                 Toggle(isOn: $model.claudeUsageMeterEnabled) {
                     Text("Claude usage meter (works offline)")
                     Text("Shows your real 5-hour usage % with no internet, by recording the numbers Claude Code computes for its terminal status line. It updates whenever a Claude session runs in a terminal — the % covers your whole account, so it reflects desktop app usage too. If you only ever use the desktop app, turn on Live usage below instead. Your own status line keeps working, and turning this off restores it exactly.")
                 }
+                .hapticTick(on: model.claudeUsageMeterEnabled)
                 Toggle(isOn: $model.liveUsageEnabled) {
                     Text("Live usage % (connects to the internet)")
                     Text("Off by default, everything else stays fully offline. When on, the app uses your existing logins to fetch real usage: Claude via a tiny 1-token request to api.anthropic.com (5-hour + weekly %), Cursor's included-usage % from cursor.com, and your Manus credit balance from api.manus.im. Each read-only, each only its own vendor. Codex and Antigravity already show real usage with no network.")
                 }
+                .hapticTick(on: model.liveUsageEnabled)
                 if model.liveUsageEnabled, let status = model.liveUsageStatus {
                     Label(status, systemImage: "info.circle")
                         .font(.caption)
@@ -309,6 +322,7 @@ struct PreferencesView: View {
                     Text("Check for updates daily")
                     Text("Once a day, asks github.com if a newer version exists and notifies you if so (nothing about your usage is sent). Turn off to keep the app fully offline.")
                 }
+                .hapticTick(on: model.autoUpdateCheck)
                 HStack {
                     Button("Check for updates") {
                         Task { await updates.check() }
