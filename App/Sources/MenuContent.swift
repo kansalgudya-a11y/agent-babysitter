@@ -373,25 +373,33 @@ struct MenuContent: View {
         .accessibilityLabel(limitAccessibilityLabel(entry))
     }
 
-    /// "on pace to hit the limit at 2:14 PM (~40m early)" — shown only from
-    /// the user's chosen usage floor up, so a fresh window's burst doesn't
-    /// paint a scary line. Works for the 5h snapshot and its weeklyWindow.
+    /// The pace line, always on from the user's floor up — reassuring when
+    /// the window outlasts its reset ("on pace for ~62% at reset"), a
+    /// warning when it doesn't ("on pace to hit the limit at 2:14 PM").
+    /// Works for the 5h snapshot and its weeklyWindow.
     @ViewBuilder
     private func paceCaption(_ window: UsageLimitSnapshot, floor: Double,
                              prefix: String) -> some View {
-        if let resets = window.resetsAt,
-           let exhaustion = UsageForecast.projectedExhaustion(window),
-           (window.usedPercent ?? 0) >= floor {
-            let early = resets.timeIntervalSince(exhaustion)
-            // Snapshot renders pin the wall-clock text: absolute times
-            // change every run and flip format at midnight.
-            let at = AppModel.isSnapshotMode ? "2:14 PM"
-                : NotificationManager.clockTime(exhaustion)
-            Text("\(prefix)on pace to hit the limit at \(at) (~\(Self.humanDuration(early)) early)")
-                .font(.caption2)
-                .foregroundStyle(early >= 3600 ? .red : .orange)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .help("At the current pace this window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it. You can choose when this line appears in Settings → Notifications.")
+        if (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt {
+            if let exhaustion = UsageForecast.projectedExhaustion(window) {
+                let early = resets.timeIntervalSince(exhaustion)
+                // Snapshot renders pin the wall-clock text: absolute times
+                // change every run and flip format at midnight.
+                let at = AppModel.isSnapshotMode ? "2:14 PM"
+                    : NotificationManager.clockTime(exhaustion)
+                Text("\(prefix)on pace to hit the limit at \(at) (~\(Self.humanDuration(early)) early)")
+                    .font(.caption2)
+                    .foregroundStyle(early >= 3600 ? .red : .orange)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .help("At the current pace this window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it. You can choose when this line appears in Settings → Notifications.")
+            } else if let projected = UsageForecast.projectedPercentAtReset(window),
+                      projected <= 100 {
+                Text("\(prefix)on pace for ~\(Int(projected))% at reset")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .help("At the current pace this window lands around \(Int(projected))% when it resets — no limit trouble ahead. You can choose when this line appears in Settings → Notifications.")
+            }
         }
     }
 
@@ -411,21 +419,30 @@ struct MenuContent: View {
             }
             // The pace captions are drawn inside this ignored-children
             // element, so VoiceOver only hears them if they're spoken here.
-            if let resets = limit.resetsAt,
-               let exhaustion = UsageForecast.projectedExhaustion(limit),
-               (limit.usedPercent ?? 0) >= model.paceFiveHourFloor {
-                let early = resets.timeIntervalSince(exhaustion)
-                text += ", on pace to hit the limit \(Self.humanDuration(early)) before it resets"
-            }
-            if let weekly = limit.weeklyWindow, let resets = weekly.resetsAt,
-               let exhaustion = UsageForecast.projectedExhaustion(weekly),
-               (weekly.usedPercent ?? 0) >= model.paceWeeklyFloor {
-                let early = resets.timeIntervalSince(exhaustion)
-                text += ", weekly window on pace to hit the limit \(Self.humanDuration(early)) before it resets"
+            text += paceSentence(limit, floor: model.paceFiveHourFloor, name: "")
+            if let weekly = limit.weeklyWindow {
+                text += paceSentence(weekly, floor: model.paceWeeklyFloor,
+                                     name: "weekly window ")
             }
             return text
         }
         return "\(entry.name), \(limit.plan ?? "plan") plan"
+    }
+
+    /// Spoken mirror of paceCaption for VoiceOver — same floors, both moods.
+    private func paceSentence(_ window: UsageLimitSnapshot, floor: Double,
+                              name: String) -> String {
+        guard (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt
+        else { return "" }
+        if let exhaustion = UsageForecast.projectedExhaustion(window) {
+            let early = resets.timeIntervalSince(exhaustion)
+            return ", \(name)on pace to hit the limit \(Self.humanDuration(early)) before it resets"
+        }
+        if let projected = UsageForecast.projectedPercentAtReset(window),
+           projected <= 100 {
+            return ", \(name)on pace for \(Int(projected)) percent at reset"
+        }
+        return ""
     }
 
     /// Human name for a usage window, from its length.

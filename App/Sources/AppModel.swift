@@ -295,8 +295,8 @@ final class AppModel: ObservableObject {
                                      "notifyStalled": true,
                                      "notifyLimit": true,
                                      "notifyPace": true,
-                                     "paceFiveHourFloor": 30.0,
-                                     "paceWeeklyFloor": 30.0,
+                                     "paceFiveHourFloor": 10.0,
+                                     "paceWeeklyFloor": 10.0,
                                      "limitAlertThreshold": 80.0,
                                      "hotKeyEnabled": true,
                                      "menuBarStyle": "status",
@@ -338,8 +338,14 @@ final class AppModel: ObservableObject {
         weeklyDigestEnabled = defaults.bool(forKey: "weeklyDigestEnabled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         notifyPace = defaults.bool(forKey: "notifyPace")
-        paceFiveHourFloor = defaults.double(forKey: "paceFiveHourFloor")
-        paceWeeklyFloor = defaults.double(forKey: "paceWeeklyFloor")
+        // Snapshot renders share the user's defaults domain — pin the pace
+        // floors so QA output doesn't depend on this machine's slider
+        // positions (init-time assignment fires no didSet, so nothing is
+        // written back to the user's plist).
+        paceFiveHourFloor = Self.isSnapshotMode ? 10
+            : defaults.double(forKey: "paceFiveHourFloor")
+        paceWeeklyFloor = Self.isSnapshotMode ? 10
+            : defaults.double(forKey: "paceWeeklyFloor")
         limitAlertThreshold = defaults.double(forKey: "limitAlertThreshold")
         dailyBudget = defaults.double(forKey: "dailyBudget")
         weeklyBudget = defaults.double(forKey: "weeklyBudget")
@@ -1090,10 +1096,13 @@ final class AppModel: ObservableObject {
     /// INTO predictive warnings would go silent exactly when danger peaks.
     private func deliverPaceWarnings(_ limits: [String: UsageLimitSnapshot]) {
         guard notifyPace else { return }
+        // The sliders gate the menu line from as low as 0%, but a BANNER for
+        // an early-window burst is noise — alerts keep the hard 30% floor,
+        // which the slider can raise but not lower.
         let outcome = PaceAlertPlanner.plan(limits: limits,
                                             threshold: notifyLimit ? limitAlertThreshold : 101,
-                                            minimumFiveHourPercent: paceFiveHourFloor,
-                                            minimumWeeklyPercent: paceWeeklyFloor,
+                                            minimumFiveHourPercent: max(PaceAlertPlanner.minimumUsedPercent, paceFiveHourFloor),
+                                            minimumWeeklyPercent: max(PaceAlertPlanner.minimumUsedPercent, paceWeeklyFloor),
                                             alertedFiveHour: paceAlertedFiveHour,
                                             alertedWeekly: paceAlertedWeekly)
         persistAlerted(outcome.alertedFiveHour, into: &paceAlertedFiveHour,

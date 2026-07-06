@@ -45,4 +45,19 @@ public enum UsageForecast {
         guard exhaustion < resets, exhaustion > now else { return nil }
         return exhaustion
     }
+
+    /// The other side of the coin: where the current pace lands by the time
+    /// the window resets — "on pace for ~62%". nil when the pace can't be
+    /// measured yet; values over 100 mean the exhaustion path applies (or a
+    /// stale reading already burned past its pace), so callers showing a
+    /// reassuring line should ignore them.
+    public static func projectedPercentAtReset(_ snapshot: UsageLimitSnapshot,
+                                               now: Date = Date()) -> Double? {
+        guard let used = snapshot.usedPercent, used >= minimumPercent,
+              let resets = snapshot.resetsAt, resets > now else { return nil }
+        let windowStart = resets.addingTimeInterval(-Double(snapshot.windowMinutes) * 60)
+        let elapsedAtCapture = snapshot.capturedAt.timeIntervalSince(windowStart)
+        guard elapsedAtCapture >= minimumElapsed else { return nil }
+        return used * Double(snapshot.windowMinutes) * 60 / elapsedAtCapture
+    }
 }

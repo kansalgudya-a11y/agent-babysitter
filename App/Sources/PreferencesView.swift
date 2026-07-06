@@ -214,7 +214,7 @@ struct PreferencesView: View {
                         .monospacedDigit()
                         .frame(width: 52, alignment: .trailing)
                 }
-                .help("Show the 5-hour pace line (and allow its alert) once the window is this full. Lower = earlier but noisier predictions; 0% shows it whenever a projection exists.")
+                .help("Show the 5-hour pace line in the menu once the window is this full — green when the pace is fine, orange/red when it would hit the limit early. 0% shows it whenever a pace can be measured. Pace alerts additionally wait until at least 30%.")
                 HStack {
                     Slider(value: $model.paceWeeklyFloor, in: 0...90, step: 5) {
                         Text("Weekly pace from")
@@ -225,7 +225,7 @@ struct PreferencesView: View {
                         .monospacedDigit()
                         .frame(width: 52, alignment: .trailing)
                 }
-                .help("Show the weekly pace line (and allow its alert) once the weekly window is this full.")
+                .help("Show the weekly pace line in the menu once the weekly window is this full. Pace alerts additionally wait until at least 30%.")
                 Toggle(isOn: $model.weeklyDigestEnabled) {
                     Text("📊 Weekly summary")
                     Text("One Sunday-evening note: the week's estimated cost, session count, and busiest project.")

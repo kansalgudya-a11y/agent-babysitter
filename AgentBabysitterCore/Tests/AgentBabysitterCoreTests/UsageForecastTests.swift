@@ -59,5 +59,21 @@ final class UsageForecastTests: XCTestCase {
         let s = snapshot(used: 90, capturedMinutesAgo: 30, resetsInMinutes: -5)
         XCTAssertNil(UsageForecast.estimatedCurrentPercent(s, now: now))
         XCTAssertNil(UsageForecast.projectedExhaustion(s, now: now))
+        XCTAssertNil(UsageForecast.projectedPercentAtReset(s, now: now))
+    }
+
+    func testProjectsPercentAtResetForAComfortablePace() {
+        // 40% at 150m of a 300m window => on pace for 80% at reset.
+        let s = snapshot(used: 40, capturedMinutesAgo: 0.01, resetsInMinutes: 150)
+        let projected = try! XCTUnwrap(UsageForecast.projectedPercentAtReset(s, now: now))
+        XCTAssertEqual(projected, 80, accuracy: 0.5)
+        // A pace headed over 100% reports as such — callers hide it and let
+        // the exhaustion warning speak instead.
+        let hot = snapshot(used: 60, capturedMinutesAgo: 0.01, resetsInMinutes: 150)
+        XCTAssertEqual(try! XCTUnwrap(UsageForecast.projectedPercentAtReset(hot, now: now)),
+                       120, accuracy: 0.5)
+        // Too young to measure: same floor as the exhaustion path.
+        XCTAssertNil(UsageForecast.projectedPercentAtReset(
+            snapshot(used: 50, capturedMinutesAgo: 15, resetsInMinutes: 290), now: now))
     }
 }
