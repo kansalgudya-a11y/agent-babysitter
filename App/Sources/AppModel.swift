@@ -1049,15 +1049,20 @@ final class AppModel: ObservableObject {
         // Pace-corrected estimates everywhere — a stale 78% that's really
         // 84% should tint the icon and fire the 80% warning.
         let effective = limits.mapValues { snapshot in
-            guard let estimate = UsageForecast.estimatedCurrentPercent(snapshot) else {
-                return snapshot
-            }
-            return UsageLimitSnapshot(usedPercent: estimate,
+            // Correct BOTH windows: a stale weekly 78% that's really 82%
+            // must trip the 80% weekly alert too, or the reactive planner
+            // (raw) and the pace planner (corrected) leave a silent band
+            // between them.
+            let estimate = UsageForecast.estimatedCurrentPercent(snapshot)
+            let weeklyEstimate = snapshot.weeklyWindow
+                .flatMap { UsageForecast.estimatedCurrentPercent($0) }
+            guard estimate != nil || weeklyEstimate != nil else { return snapshot }
+            return UsageLimitSnapshot(usedPercent: estimate ?? snapshot.usedPercent,
                                       windowMinutes: snapshot.windowMinutes,
                                       resetsAt: snapshot.resetsAt,
                                       capturedAt: snapshot.capturedAt,
                                       plan: snapshot.plan, isLive: snapshot.isLive,
-                                      weeklyUsedPercent: snapshot.weeklyUsedPercent,
+                                      weeklyUsedPercent: weeklyEstimate ?? snapshot.weeklyUsedPercent,
                                       weeklyResetsAt: snapshot.weeklyResetsAt)
         }
         limitDanger = effective.values.contains {

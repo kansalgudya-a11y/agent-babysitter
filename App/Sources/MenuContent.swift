@@ -386,12 +386,15 @@ struct MenuContent: View {
     }
 
     private func paceForecast(_ window: UsageLimitSnapshot, floor: Double) -> PaceForecast {
-        guard (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt else { return .none }
+        // Freshness lives in UsageForecast itself (maximumStaleness), so the
+        // menu and the banner path can't drift on what counts as too old.
+        guard (window.usedPercent ?? 0) >= floor, let resets = window.resetsAt
+        else { return .none }
         if let exhaustion = UsageForecast.projectedExhaustion(window) {
             return .exhausting(early: resets.timeIntervalSince(exhaustion), at: exhaustion)
         }
         if let projected = UsageForecast.projectedPercentAtReset(window), projected <= 100 {
-            return .landing(percent: Int(projected))
+            return .landing(percent: Int(projected.rounded()))
         }
         return .none
     }
