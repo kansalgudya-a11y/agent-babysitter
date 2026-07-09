@@ -791,7 +791,10 @@ struct SessionRowView: View {
             // Price and tokens together, for every app — the price answers
             // "what did this cost", the tokens answer "how much work was it".
             VStack(alignment: .trailing, spacing: 1) {
-                Text(row.cost.dollars > 0 ? money(row.cost.dollars)
+                Text(row.cost.dollars > 0
+                     ? (CostConfidence.level(for: row.cost) == .partial
+                        ? money(row.cost.dollars).replacingOccurrences(of: "~", with: "≥")
+                        : money(row.cost.dollars))
                      : row.cost.totalTokens > 0 ? "\(row.cost.formattedTokens) tok" : "—")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)

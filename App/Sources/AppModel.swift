@@ -180,6 +180,14 @@ final class AppModel: ObservableObject {
     @Published var waitingReminderMinutes: Double {
         didSet { UserDefaults.standard.set(waitingReminderMinutes, forKey: "waitingReminderMinutes") }
     }
+    /// Advisory spend guard: a nudge (never a pause) when a session burns fast
+    /// or crosses the per-session budget below.
+    @Published var spendGuardEnabled: Bool {
+        didSet { UserDefaults.standard.set(spendGuardEnabled, forKey: "spendGuardEnabled") }
+    }
+    @Published var spendGuardBudget: Double {
+        didSet { UserDefaults.standard.set(spendGuardBudget, forKey: "spendGuardBudget") }
+    }
     @Published var notifyStalled: Bool {
         didSet { UserDefaults.standard.set(notifyStalled, forKey: "notifyStalled") }
     }
@@ -260,6 +268,11 @@ final class AppModel: ObservableObject {
     private var onboardingPollTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
     private var waitingReminderPlanner = WaitingReminderPlanner()
+    private var spendGuardPlanner = SpendGuardPlanner()
+    /// "What Agent Babysitter caught for you" — persisted across launches and
+    /// summed for the current month into `impactThisMonth` for the stats view.
+    private var impactLedger = ImpactLedger.Ledger()
+    @Published private(set) var impactThisMonth = ImpactLedger.Summary()
     /// What the stats window currently shows — the weekly digest reads this
     /// so it matches the numbers the user sees (household sum when sync on).
     private var latestDisplayLedger: StatsLedger.Ledger?
@@ -323,6 +336,8 @@ final class AppModel: ObservableObject {
                                      "quietEndHour": 8,
                                      "weeklyDigestEnabled": true,
                                      "waitingReminderMinutes": 10.0,
+                                     "spendGuardEnabled": true,
+                                     "spendGuardBudget": 25.0,
                                      "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -351,6 +366,13 @@ final class AppModel: ObservableObject {
         notifyStalled = defaults.bool(forKey: "notifyStalled")
         waitingReminderEnabled = defaults.bool(forKey: "waitingReminderEnabled")
         waitingReminderMinutes = defaults.double(forKey: "waitingReminderMinutes")
+        spendGuardEnabled = defaults.bool(forKey: "spendGuardEnabled")
+        spendGuardBudget = defaults.double(forKey: "spendGuardBudget")
+        if let data = defaults.data(forKey: "impactLedger"),
+           let l = try? JSONDecoder().decode(ImpactLedger.Ledger.self, from: data) {
+            impactLedger = l
+        }
+        impactThisMonth = ImpactLedger.summary(impactLedger, days: AppModel.currentMonthDayKeys())
         weeklyDigestEnabled = defaults.bool(forKey: "weeklyDigestEnabled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         notifyPace = defaults.bool(forKey: "notifyPace")
@@ -808,6 +830,57 @@ final class AppModel: ObservableObject {
                     row: row, minutes: Int(waitingReminderMinutes))
             }
         }
+
+        // Advisory spend guard — a nudge to look, never a pause. Evaluate every
+        // tick so burn windows stay warm; deliver only when not muted.
+        var newSuggestions = 0
+        var dollarsFlagged = 0.0
+        if spendGuardEnabled {
+            let suggestions = spendGuardPlanner.evaluate(
+                rows: rows,
+                config: SpendGuardPlanner.Config(sessionBudget: max(1, spendGuardBudget)))
+            if !notificationsMuted {
+                for s in suggestions {
+                    notificationManager.deliverSpendSuggestion(s)
+                    newSuggestions += 1
+                    dollarsFlagged += s.dollars
+                }
+            }
+        }
+
+        // Record what we caught for the impact ledger: new stall episodes and
+        // waiting pings the planner surfaced this tick, plus any spend nudges.
+        let newStalls = events.filter { $0.kind == .stalled }.count
+        let newWaits = events.filter { $0.kind == .waitingForInput }.count
+        if newStalls > 0 || newWaits > 0 || newSuggestions > 0 || dollarsFlagged > 0 {
+            impactLedger = ImpactLedger.recorded(
+                impactLedger, todayKey: DailyCostHistory.key(for: Date()),
+                stalls: newStalls, waits: newWaits,
+                suggestions: newSuggestions, dollarsFlagged: dollarsFlagged)
+            persistImpact()
+        }
+    }
+
+    /// Day keys ("yyyy-MM-dd") for every day of the current month up to today.
+    private static func currentMonthDayKeys() -> [String] {
+        let now = Date()
+        let cal = Calendar.current
+        let today = cal.component(.day, from: now)
+        var keys: [String] = []
+        for day in 1...max(1, today) {
+            if let date = cal.date(bySetting: .day, value: day, of: now), date <= now {
+                keys.append(DailyCostHistory.key(for: date))
+            }
+        }
+        return keys
+    }
+
+    /// Persist the impact ledger and refresh the published month summary.
+    private func persistImpact() {
+        if let data = try? JSONEncoder().encode(impactLedger) {
+            UserDefaults.standard.set(data, forKey: "impactLedger")
+        }
+        impactThisMonth = ImpactLedger.summary(impactLedger, days: AppModel.currentMonthDayKeys())
     }
 
     /// Per-day per-agent dollars, session counts, and active minutes — the

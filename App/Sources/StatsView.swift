@@ -90,6 +90,22 @@ struct StatsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if model.impactThisMonth.hasContent {
+                Divider()
+                let i = model.impactThisMonth
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("What I caught for you this month")
+                        .font(.caption).fontWeight(.semibold)
+                    Text([
+                        i.waits > 0 ? "\(i.waits)× an agent needed you" : nil,
+                        i.stalls > 0 ? "\(i.stalls) stalls flagged" : nil,
+                        i.suggestions > 0 ? "\(i.suggestions) spend nudges" : nil,
+                        i.dollarsFlagged > 0 ? "\(model.money(i.dollarsFlagged)) flagged before it ran away" : nil,
+                    ].compactMap { $0 }.joined(separator: "  ·  "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             // Even one bucket draws (a single bar beats a missing graph);
             // Today skips the time charts — one day has no time axis.
             if range != .today, !buckets.isEmpty {
