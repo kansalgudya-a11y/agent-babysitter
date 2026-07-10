@@ -66,8 +66,17 @@ public struct SessionCost: Equatable, Sendable {
 
     public var hasUnknownPricing: Bool { !unknownModels.isEmpty }
 
+    /// EVERY token the API processed, cache reads included. Cache reads are
+    /// ~90%+ of real volume (they're re-sent each call and billed at a tenth
+    /// the input rate), so this — not `totalTokens` — is the number that
+    /// matches `/cost` and the usage console. Show this to users.
+    public var allTokens: Int { totalTokens + cacheReadTokens }
+
     /// "812" / "42k" / "264.9M" / "1.2B" - rolls to the next unit past 999.
     public var formattedTokens: String { Self.abbreviatedCount(totalTokens) }
+
+    /// Abbreviated `allTokens` — the figure the UI displays as "tok".
+    public var formattedAllTokens: String { Self.abbreviatedCount(allTokens) }
 
     public static func abbreviatedCount(_ count: Int) -> String {
         func scaled(_ value: Double, _ unit: String) -> String {
@@ -134,8 +143,11 @@ public struct CostAccumulator: Sendable {
     }
 
     public mutating func consume(_ entry: TranscriptEntry) {
-        guard case .assistant(let payload) = entry.kind,
-              let usage = payload.usage, usage.totalTokens > 0 else { return }
+        // `totalTokens` counts new work only, so a message that is nothing but
+        // cache reads would be skipped — and those reads are billed. Admit any
+        // message with real usage of any kind.
+        guard case .assistant(let payload) = entry.kind, let usage = payload.usage,
+              usage.totalTokens > 0 || usage.cacheReadInputTokens > 0 else { return }
         if let id = payload.messageID {
             if let claims {
                 guard claims.claim(id, owner: owner) else { return }
