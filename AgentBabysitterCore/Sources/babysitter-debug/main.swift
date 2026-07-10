@@ -38,8 +38,8 @@ print("\nsession rows:")
 for row in await store.rows() {
     let cost: String
     if row.cost.hasUnknownPricing {
-        cost = "\(row.cost.allTokens) tok (pricing unknown)"
-    } else if row.cost.dollars == 0 && row.cost.allTokens == 0 {
+        cost = "\(row.cost.totalTokens) tok (pricing unknown)"
+    } else if row.cost.dollars == 0 && row.cost.totalTokens == 0 {
         cost = "—"
     } else {
         cost = String(format: "$%.2f", row.cost.dollars)

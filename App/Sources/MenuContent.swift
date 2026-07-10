@@ -794,11 +794,11 @@ struct SessionRowView: View {
                 Text(row.cost.dollars > 0
                      ? money(row.cost.dollars).replacingOccurrences(
                            of: "~", with: CostConfidence.amountPrefix(CostConfidence.level(for: row.cost)))
-                     : row.cost.allTokens > 0 ? "\(row.cost.formattedAllTokens) tok" : "—")
+                     : row.cost.totalTokens > 0 ? "\(row.cost.formattedTokens) tok" : "—")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                if row.cost.dollars > 0, row.cost.allTokens > 0 {
-                    Text("\(row.cost.formattedAllTokens) tok")
+                if row.cost.dollars > 0, row.cost.totalTokens > 0 {
+                    Text("\(row.cost.formattedTokens) tok")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }
@@ -827,7 +827,7 @@ struct SessionRowView: View {
         .accessibilityLabel("\(row.projectName), \(row.state.label)"
             + (row.title.map { $0 == row.projectName ? "" : ", working on \($0)" } ?? "")
             + (row.cost.dollars > 0 ? ", about \(Int(row.cost.dollars)) dollars" : "")
-            + (row.cost.allTokens > 0 ? ", \(row.cost.formattedAllTokens) tokens" : ""))
+            + (row.cost.totalTokens > 0 ? ", \(row.cost.formattedTokens) tokens" : ""))
         .accessibilityHint("Jumps to this session")
         // The chevron is swallowed by children:.ignore, so expose the drill-in
         // toggle as an action on the combined element instead.
@@ -975,13 +975,13 @@ extension SessionCost {
     /// "~$1.22" (in the user's currency), or token counts when pricing is
     /// unknown — never guessed dollars. `money` converts a USD amount.
     func display(money: (Double) -> String) -> String {
-        if dollars == 0 && allTokens == 0 && !hasUnknownPricing {
+        if dollars == 0 && totalTokens == 0 && !hasUnknownPricing {
             return "—"  // no readable usage at all (e.g. Antigravity)
         }
         if hasUnknownPricing {
             return dollars > 0
-                ? "\(money(dollars)) + \(formattedAllTokens) tokens"
-                : "\(formattedAllTokens) tokens"
+                ? "\(money(dollars)) + \(formattedTokens) tokens"
+                : "\(formattedTokens) tokens"
         }
         return money(dollars)
     }

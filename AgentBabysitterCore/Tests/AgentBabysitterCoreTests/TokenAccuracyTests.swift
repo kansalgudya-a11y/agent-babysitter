@@ -1,9 +1,12 @@
 import XCTest
 @testable import AgentBabysitterCore
 
-/// The displayed token figure must be every token the API processed. Cache
-/// reads are ~90%+ of real volume, so omitting them under-reports by an order
-/// of magnitude against `/cost` and the usage console.
+/// Tokens have two honest meanings and the UI must not confuse them:
+/// `totalTokens` = NEW WORK (input + output + cache writes) — tokens that
+/// existed once, and what a user means by "tokens used". `allTokens` adds
+/// cache re-reads: billed volume, but it counts one cached prefix again on
+/// every call, so a 400k context over 4,500 calls reads as ~1.8B. Cost counts
+/// cache reads; the headline token figure must not.
 final class TokenAccuracyTests: XCTestCase {
 
     private func entry(_ id: String, input: Int = 0, output: Int = 0,
@@ -17,13 +20,13 @@ final class TokenAccuracyTests: XCTestCase {
             uuid: nil, timestamp: nil, sessionID: "s", cwd: nil, isSidechain: false)
     }
 
-    func testAllTokensIncludesCacheReads() {
+    func testNewWorkExcludesCacheReadsWhileBilledVolumeIncludesThem() {
         var acc = CostAccumulator()
         acc.consume(entry("m", input: 10, output: 20, cacheWrite: 30, cacheRead: 1_000))
         XCTAssertEqual(acc.cost.totalTokens, 60, "new work only")
         XCTAssertEqual(acc.cost.cacheReadTokens, 1_000)
-        XCTAssertEqual(acc.cost.allTokens, 1_060, "what the UI shows as 'tok'")
-        XCTAssertEqual(acc.cost.formattedAllTokens, "1k")
+        XCTAssertEqual(acc.cost.allTokens, 1_060, "billed volume, incl. cache re-reads")
+        XCTAssertEqual(acc.cost.formattedTokens, "60", "the UI's 'tok' = new work only")
     }
 
     /// A message that is nothing but cache reads still costs money; the old

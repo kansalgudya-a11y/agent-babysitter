@@ -66,10 +66,13 @@ public struct SessionCost: Equatable, Sendable {
 
     public var hasUnknownPricing: Bool { !unknownModels.isEmpty }
 
-    /// EVERY token the API processed, cache reads included. Cache reads are
-    /// ~90%+ of real volume (they're re-sent each call and billed at a tenth
-    /// the input rate), so this — not `totalTokens` — is the number that
-    /// matches `/cost` and the usage console. Show this to users.
+    /// Billed volume: new work PLUS every cache re-read. Useful for explaining
+    /// a bill, misleading as a headline.
+    ///
+    /// A cached prefix is re-sent on every call, so this counts the same tokens
+    /// once per request — a 400k-token context over 4,500 calls reads as ~1.8B
+    /// "tokens" though only ~400k distinct tokens ever existed. Never show this
+    /// as "tokens used"; `totalTokens` (new work) is that number.
     public var allTokens: Int { totalTokens + cacheReadTokens }
 
     /// "812" / "42k" / "264.9M" / "1.2B" - rolls to the next unit past 999.
