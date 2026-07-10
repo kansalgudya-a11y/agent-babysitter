@@ -127,10 +127,18 @@ public struct CostAccumulator: Sendable {
     /// nil = follow the live local timezone per entry (never frozen); tests
     /// pin an explicit zone for determinism.
     private let timeZoneOverride: TimeZone?
-    private var seenMessageIDs: Set<String> = []
+    /// What we've already billed for a message, so a later streaming line that
+    /// carries the message's FINAL usage can revise the figure instead of being
+    /// dropped (early lines report `output_tokens: 1`).
+    private struct Counted {
+        var usage: TokenUsage
+        var dollars: Double
+        var day: Date?
+    }
+    private var counted: [String: Counted] = [:]
     /// Store-wide dedupe. A resumed/forked session's transcript repeats the
     /// earlier session's messages verbatim; without a shared registry each file
-    /// bills them again. nil = stand-alone (tests) → per-file dedupe as before.
+    /// bills them again. nil = stand-alone (tests) → per-file dedupe.
     private let claims: MessageIDClaims?
     private let owner: String
 
@@ -148,13 +156,11 @@ public struct CostAccumulator: Sendable {
         // message with real usage of any kind.
         guard case .assistant(let payload) = entry.kind, let usage = payload.usage,
               usage.totalTokens > 0 || usage.cacheReadInputTokens > 0 else { return }
-        if let id = payload.messageID {
-            if let claims {
-                guard claims.claim(id, owner: owner) else { return }
-            } else {
-                guard seenMessageIDs.insert(id).inserted else { return }
-            }
-        }
+
+        // Another transcript already billed this message (a resumed session
+        // copies its parent's conversation verbatim) — never bill it twice.
+        if let id = payload.messageID, let claims,
+           claims.claim(id, owner: owner) == .ownedByOther { return }
 
         var dollars = 0.0
         var unknownModel: String?
@@ -168,31 +174,62 @@ public struct CostAccumulator: Sendable {
             unknownModel = payload.model ?? "unknown"
         }
 
-        cost.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
-
         // An undated entry can't be attributed to a day. Charging it to "now"
         // would silently move an old session's spend into today; the session's
         // own total still counts it.
-        guard let timestamp = entry.timestamp else { return }
-        let day = LocalDay.start(of: timestamp, timeZone: timeZoneOverride ?? .current)
+        let day = entry.timestamp.map {
+            LocalDay.start(of: $0, timeZone: timeZoneOverride ?? .current)
+        }
+
+        if let id = payload.messageID, let previous = counted[id] {
+            // Same message again. Claude Code streams one assistant message as
+            // several lines, each repeating usage as it GROWS; only the last
+            // line is the real bill. Replace what we billed, keeping the
+            // message in the day bucket it was first attributed to.
+            guard billable(usage) > billable(previous.usage) else { return }
+            apply(previous.usage, dollars: previous.dollars, unknownModel: nil,
+                  day: previous.day, model: payload.model, sign: -1)
+            apply(usage, dollars: dollars, unknownModel: unknownModel,
+                  day: previous.day, model: payload.model, sign: 1)
+            counted[id] = Counted(usage: usage, dollars: dollars, day: previous.day)
+            return
+        }
+
+        apply(usage, dollars: dollars, unknownModel: unknownModel,
+              day: day, model: payload.model, sign: 1)
+        if let id = payload.messageID {
+            counted[id] = Counted(usage: usage, dollars: dollars, day: day)
+        }
+    }
+
+    private func billable(_ usage: TokenUsage) -> Int {
+        usage.totalTokens + usage.cacheReadInputTokens
+    }
+
+    /// Fold one message in (`sign: 1`) or back out (`sign: -1`).
+    private mutating func apply(_ usage: TokenUsage, dollars: Double, unknownModel: String?,
+                                day: Date?, model: String?, sign: Int) {
+        cost.add(usage: usage, dollars: dollars, unknownModel: unknownModel, sign: sign)
+        guard let day else { return }
         var daily = dailyCosts[day] ?? SessionCost()
-        daily.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
+        daily.add(usage: usage, dollars: dollars, unknownModel: unknownModel, sign: sign)
         dailyCosts[day] = daily
-        if dollars > 0, let model = payload.model {
-            dailyDollarsByModel[day, default: [:]][model, default: 0] += dollars
+        if dollars > 0, let model {
+            dailyDollarsByModel[day, default: [:]][model, default: 0] += Double(sign) * dollars
         }
     }
 }
 
 extension SessionCost {
-    /// Fold one message's usage in: total + the input/output/cache split.
-    mutating func add(usage: TokenUsage, dollars: Double, unknownModel: String?) {
-        totalTokens += usage.totalTokens
-        inputTokens += usage.inputTokens
-        outputTokens += usage.outputTokens
-        cacheReadTokens += usage.cacheReadInputTokens
-        cacheWriteTokens += usage.cacheCreationInputTokens
-        self.dollars += dollars
+    /// Fold one message's usage in (`sign: 1`) or back out (`sign: -1`) — the
+    /// latter when a later streaming line supersedes what we already billed.
+    mutating func add(usage: TokenUsage, dollars: Double, unknownModel: String?, sign: Int = 1) {
+        totalTokens += sign * usage.totalTokens
+        inputTokens += sign * usage.inputTokens
+        outputTokens += sign * usage.outputTokens
+        cacheReadTokens += sign * usage.cacheReadInputTokens
+        cacheWriteTokens += sign * usage.cacheCreationInputTokens
+        self.dollars += Double(sign) * dollars
         if let unknownModel { unknownModels.insert(unknownModel) }
     }
 }

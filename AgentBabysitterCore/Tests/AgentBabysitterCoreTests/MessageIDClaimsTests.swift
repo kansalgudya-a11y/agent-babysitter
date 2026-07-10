@@ -16,19 +16,21 @@ final class MessageIDClaimsTests: XCTestCase {
             uuid: nil, timestamp: nil, sessionID: "s", cwd: nil, isSidechain: false)
     }
 
-    func testFirstClaimWinsAndSecondIsRefused() {
+    func testFirstClaimWinsAndAForeignCopyIsRefused() {
         let claims = MessageIDClaims()
-        XCTAssertTrue(claims.claim("msg_1", owner: "sessionA"))
-        XCTAssertFalse(claims.claim("msg_1", owner: "sessionB"), "already counted by A")
-        XCTAssertFalse(claims.claim("msg_1", owner: "sessionA"), "not even twice by its owner")
+        XCTAssertEqual(claims.claim("msg_1", owner: "sessionA"), .granted)
+        XCTAssertEqual(claims.claim("msg_1", owner: "sessionB"), .ownedByOther,
+                       "a resumed session's copy must never be billed again")
+        XCTAssertEqual(claims.claim("msg_1", owner: "sessionA"), .alreadyOwned,
+                       "its owner may revise it (later streaming line), not re-bill it")
         XCTAssertEqual(claims.count, 1)
     }
 
     func testReleaseLetsTheOwnerCountItsMessagesAgain() {
         let claims = MessageIDClaims()
-        XCTAssertTrue(claims.claim("msg_1", owner: "sessionA"))
+        XCTAssertEqual(claims.claim("msg_1", owner: "sessionA"), .granted)
         claims.release(owner: "sessionA")     // its file shrank → re-read from scratch
-        XCTAssertTrue(claims.claim("msg_1", owner: "sessionA"))
+        XCTAssertEqual(claims.claim("msg_1", owner: "sessionA"), .granted)
         XCTAssertEqual(claims.count, 1)
     }
 
@@ -37,8 +39,8 @@ final class MessageIDClaimsTests: XCTestCase {
         _ = claims.claim("a", owner: "s1")
         _ = claims.claim("b", owner: "s2")
         claims.release(owner: "s1")
-        XCTAssertTrue(claims.claim("a", owner: "s1"), "s1's id is free again")
-        XCTAssertFalse(claims.claim("b", owner: "s1"), "s2 still owns b")
+        XCTAssertEqual(claims.claim("a", owner: "s1"), .granted, "s1's id is free again")
+        XCTAssertEqual(claims.claim("b", owner: "s1"), .ownedByOther, "s2 still owns b")
     }
 
     /// The real bug: a resumed session's transcript repeats the original's
@@ -75,7 +77,36 @@ final class MessageIDClaimsTests: XCTestCase {
     func testWithoutSharedClaimsPerFileDedupeStillWorks() {
         var a = CostAccumulator()   // stand-alone (existing behaviour)
         a.consume(assistant("m"))
-        a.consume(assistant("m"))   // same id twice in one file → once
+        a.consume(assistant("m"))   // identical repeat of one message → billed once
         XCTAssertEqual(a.cost.totalTokens, 1_000_000)
+    }
+
+    /// Claude Code streams one assistant message as several lines whose usage
+    /// GROWS (`output_tokens: 1` … then the real figure). The last line is the
+    /// bill; keeping the first under-counted every streamed message.
+    func testLaterStreamingLineRevisesTheMessageUpward() {
+        var a = CostAccumulator()
+        a.consume(assistant("m", output: 1))
+        a.consume(assistant("m", output: 1_000_000))
+        XCTAssertEqual(a.cost.outputTokens, 1_000_000, "final usage, not the first snapshot")
+        XCTAssertEqual(a.cost.dollars, 25, accuracy: 0.01, "billed once, at the final figure")
+    }
+
+    func testARevisionNeverShrinksTheBill() {
+        var a = CostAccumulator()
+        a.consume(assistant("m", output: 1_000_000))
+        a.consume(assistant("m", output: 1))     // a stale/smaller line must not reduce it
+        XCTAssertEqual(a.cost.outputTokens, 1_000_000)
+    }
+
+    /// A foreign copy must not revise ours either — it's the same final usage.
+    func testResumedCopyCannotReviseTheOriginal() {
+        let claims = MessageIDClaims()
+        var original = CostAccumulator(claims: claims, owner: "original")
+        var resumed = CostAccumulator(claims: claims, owner: "resumed")
+        original.consume(assistant("m", output: 1_000_000))
+        resumed.consume(assistant("m", output: 1_000_000))
+        XCTAssertEqual(resumed.cost.totalTokens, 0)
+        XCTAssertEqual(original.cost.dollars + resumed.cost.dollars, 25, accuracy: 0.01)
     }
 }
