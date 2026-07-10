@@ -732,6 +732,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refresh() async {
+        recomputeStatsHistoryIfNeeded()   // one-shot; guarded by a version key
         adoptNewlyInstalledAgents()
         let rows = await store.rows()
         let summary = await store.menuBarSummary()
@@ -1009,6 +1010,45 @@ final class AppModel: ObservableObject {
 
     /// Fold today's running total into the persisted 7-day history. Max
     /// guards against dips when old sessions prune out mid-day.
+    /// Days recorded before the double-bill and sub-agent fixes are wrong in
+    /// UserDefaults and max-merge can never walk them back. Rebuild them once
+    /// from the transcripts. Days whose transcripts are gone keep what's stored.
+    private func recomputeStatsHistoryIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 1 else { return }
+        defaults.set(1, forKey: "statsRecomputeVersion")   // once, even if it throws
+        let adapters = self.adapters
+        Task.detached(priority: .utility) { [weak self] in
+            let totals = StatsRecompute.run(adapters: adapters)
+            await MainActor.run { self?.applyRecomputedStats(totals) }
+        }
+    }
+
+    private func applyRecomputedStats(_ totals: StatsRecompute.Totals) {
+        guard !totals.dayTotals.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        var history = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
+        var byProject = defaults.dictionary(forKey: "costByProject") as? [String: [String: Double]] ?? [:]
+        var byModel = defaults.dictionary(forKey: "costByModel") as? [String: [String: Double]] ?? [:]
+
+        // REPLACE, never max-merge: the stored value is the wrong one.
+        for (day, dollars) in totals.dayTotals { history[day] = dollars }
+        for (day, value) in totals.costByAgent { byAgent[day] = value }
+        for (day, value) in totals.costByProject { byProject[day] = value }
+        for (day, value) in totals.costByModel { byModel[day] = value }
+
+        defaults.set(history, forKey: "costHistory")
+        defaults.set(byAgent, forKey: "costByAgent")
+        defaults.set(byProject, forKey: "costByProject")
+        defaults.set(byModel, forKey: "costByModel")
+        costHistory = DailyCostHistory.series(history)
+        rebuildSparkline()
+        lastStatsTick = .distantPast   // let the next tick rebuild statsDays
+        BabysitterLog.store.info(
+            "recomputed \(totals.dayTotals.count, privacy: .public) days of cost history")
+    }
+
     private func recordCostHistory(_ todayDollars: Double) {
         let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
         let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars,

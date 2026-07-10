@@ -158,8 +158,11 @@ public struct CostAccumulator: Sendable {
 
         cost.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
 
-        let day = LocalDay.start(of: entry.timestamp ?? Date(),
-                                 timeZone: timeZoneOverride ?? .current)
+        // An undated entry can't be attributed to a day. Charging it to "now"
+        // would silently move an old session's spend into today; the session's
+        // own total still counts it.
+        guard let timestamp = entry.timestamp else { return }
+        let day = LocalDay.start(of: timestamp, timeZone: timeZoneOverride ?? .current)
         var daily = dailyCosts[day] ?? SessionCost()
         daily.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
         dailyCosts[day] = daily

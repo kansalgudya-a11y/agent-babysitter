@@ -62,6 +62,16 @@ final class MessageIDClaimsTests: XCTestCase {
         XCTAssertEqual(total, 50, accuracy: 0.01)
     }
 
+    /// An entry with no timestamp can't be attributed to a day; charging it to
+    /// "now" would move an old session's spend into today.
+    func testUndatedEntryCountsInTheSessionTotalButNotInAnyDay() {
+        var acc = CostAccumulator()
+        acc.consume(assistant("m"))            // fixture carries timestamp: nil
+        XCTAssertGreaterThan(acc.cost.dollars, 0, "still part of the session's total")
+        XCTAssertTrue(acc.dailyCosts.isEmpty, "must not be charged to today")
+        XCTAssertTrue(acc.dailyDollarsByModel.isEmpty)
+    }
+
     func testWithoutSharedClaimsPerFileDedupeStillWorks() {
         var a = CostAccumulator()   // stand-alone (existing behaviour)
         a.consume(assistant("m"))
