@@ -119,17 +119,29 @@ public struct CostAccumulator: Sendable {
     /// pin an explicit zone for determinism.
     private let timeZoneOverride: TimeZone?
     private var seenMessageIDs: Set<String> = []
+    /// Store-wide dedupe. A resumed/forked session's transcript repeats the
+    /// earlier session's messages verbatim; without a shared registry each file
+    /// bills them again. nil = stand-alone (tests) → per-file dedupe as before.
+    private let claims: MessageIDClaims?
+    private let owner: String
 
-    public init(table: PriceTable = .bundled, timeZone: TimeZone? = nil) {
+    public init(table: PriceTable = .bundled, timeZone: TimeZone? = nil,
+                claims: MessageIDClaims? = nil, owner: String = "") {
         self.table = table
         self.timeZoneOverride = timeZone
+        self.claims = claims
+        self.owner = owner
     }
 
     public mutating func consume(_ entry: TranscriptEntry) {
         guard case .assistant(let payload) = entry.kind,
               let usage = payload.usage, usage.totalTokens > 0 else { return }
         if let id = payload.messageID {
-            guard seenMessageIDs.insert(id).inserted else { return }
+            if let claims {
+                guard claims.claim(id, owner: owner) else { return }
+            } else {
+                guard seenMessageIDs.insert(id).inserted else { return }
+            }
         }
 
         var dollars = 0.0
@@ -146,8 +158,11 @@ public struct CostAccumulator: Sendable {
 
         cost.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
 
-        let day = LocalDay.start(of: entry.timestamp ?? Date(),
-                                 timeZone: timeZoneOverride ?? .current)
+        // An undated entry can't be attributed to a day. Charging it to "now"
+        // would silently move an old session's spend into today; the session's
+        // own total still counts it.
+        guard let timestamp = entry.timestamp else { return }
+        let day = LocalDay.start(of: timestamp, timeZone: timeZoneOverride ?? .current)
         var daily = dailyCosts[day] ?? SessionCost()
         daily.add(usage: usage, dollars: dollars, unknownModel: unknownModel)
         dailyCosts[day] = daily

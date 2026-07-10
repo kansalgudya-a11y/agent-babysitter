@@ -180,6 +180,14 @@ final class AppModel: ObservableObject {
     @Published var waitingReminderMinutes: Double {
         didSet { UserDefaults.standard.set(waitingReminderMinutes, forKey: "waitingReminderMinutes") }
     }
+    /// Advisory spend guard: a nudge (never a pause) when a session burns fast
+    /// or crosses the per-session budget below.
+    @Published var spendGuardEnabled: Bool {
+        didSet { UserDefaults.standard.set(spendGuardEnabled, forKey: "spendGuardEnabled") }
+    }
+    @Published var spendGuardBudget: Double {
+        didSet { UserDefaults.standard.set(spendGuardBudget, forKey: "spendGuardBudget") }
+    }
     @Published var notifyStalled: Bool {
         didSet { UserDefaults.standard.set(notifyStalled, forKey: "notifyStalled") }
     }
@@ -260,6 +268,11 @@ final class AppModel: ObservableObject {
     private var onboardingPollTimer: Timer?
     private var notificationPlanner = NotificationPlanner()
     private var waitingReminderPlanner = WaitingReminderPlanner()
+    private var spendGuardPlanner = SpendGuardPlanner()
+    /// "What Agent Babysitter caught for you" — persisted across launches and
+    /// summed for the current month into `impactThisMonth` for the stats view.
+    private var impactLedger = ImpactLedger.Ledger()
+    @Published private(set) var impactThisMonth = ImpactLedger.Summary()
     /// What the stats window currently shows — the weekly digest reads this
     /// so it matches the numbers the user sees (household sum when sync on).
     private var latestDisplayLedger: StatsLedger.Ledger?
@@ -323,6 +336,8 @@ final class AppModel: ObservableObject {
                                      "quietEndHour": 8,
                                      "weeklyDigestEnabled": true,
                                      "waitingReminderMinutes": 10.0,
+                                     "spendGuardEnabled": true,
+                                     "spendGuardBudget": 25.0,
                                      "doneAutoHideMinutes": 10.0])
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -351,6 +366,13 @@ final class AppModel: ObservableObject {
         notifyStalled = defaults.bool(forKey: "notifyStalled")
         waitingReminderEnabled = defaults.bool(forKey: "waitingReminderEnabled")
         waitingReminderMinutes = defaults.double(forKey: "waitingReminderMinutes")
+        spendGuardEnabled = defaults.bool(forKey: "spendGuardEnabled")
+        spendGuardBudget = defaults.double(forKey: "spendGuardBudget")
+        if let data = defaults.data(forKey: "impactLedger"),
+           let l = try? JSONDecoder().decode(ImpactLedger.Ledger.self, from: data) {
+            impactLedger = l
+        }
+        impactThisMonth = ImpactLedger.summary(impactLedger, days: AppModel.currentMonthDayKeys())
         weeklyDigestEnabled = defaults.bool(forKey: "weeklyDigestEnabled")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         notifyPace = defaults.bool(forKey: "notifyPace")
@@ -710,6 +732,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refresh() async {
+        recomputeStatsHistoryIfNeeded()   // one-shot; guarded by a version key
         adoptNewlyInstalledAgents()
         let rows = await store.rows()
         let summary = await store.menuBarSummary()
@@ -808,6 +831,65 @@ final class AppModel: ObservableObject {
                     row: row, minutes: Int(waitingReminderMinutes))
             }
         }
+
+        // Advisory spend guard — a nudge to look, never a pause. Paused while
+        // muted (like the waiting reminder) so a nudge is never silently
+        // consumed by the planner's once-per-episode flag; a still-fast session
+        // nudges once banners resume.
+        var newSuggestions = 0
+        var dollarsFlagged = 0.0
+        if spendGuardEnabled, !notificationsMuted {
+            let suggestions = spendGuardPlanner.evaluate(
+                rows: rows,
+                config: SpendGuardPlanner.Config(sessionBudget: max(1, spendGuardBudget)))
+            var flaggedSessions: Set<String> = []   // a session counts once even if both kinds fire
+            for s in suggestions {
+                notificationManager.deliverSpendSuggestion(s)
+                newSuggestions += 1
+                if flaggedSessions.insert(s.id).inserted { dollarsFlagged += s.dollars }
+            }
+        }
+
+        // Record only what we actually surfaced: stall/wait edges for the
+        // categories still enabled and not muted (quiet hours already returned
+        // above), plus the spend nudges delivered this tick.
+        let delivering = !notificationsMuted
+        let newStalls = (delivering && notifyStalled) ? events.filter { $0.kind == .stalled }.count : 0
+        let newWaits = (delivering && notifyWaiting) ? events.filter { $0.kind == .waitingForInput }.count : 0
+        if newStalls > 0 || newWaits > 0 || newSuggestions > 0 || dollarsFlagged > 0 {
+            impactLedger = ImpactLedger.recorded(
+                impactLedger, todayKey: DailyCostHistory.key(for: Date()),
+                stalls: newStalls, waits: newWaits,
+                suggestions: newSuggestions, dollarsFlagged: dollarsFlagged)
+            persistImpact()
+        }
+    }
+
+    /// Day keys for every day of the current month up to today. Builds each
+    /// date from fixed y/m/d components — `Calendar.date(bySetting:)` searches
+    /// FORWARD, so it would roll earlier days into next month and drop them.
+    private static func currentMonthDayKeys() -> [String] {
+        let now = Date()
+        let cal = Calendar.current
+        let today = cal.component(.day, from: now)
+        let year = cal.component(.year, from: now)
+        let month = cal.component(.month, from: now)
+        return (1...max(1, today)).compactMap { day in
+            cal.date(from: DateComponents(year: year, month: month, day: day))
+                .map { DailyCostHistory.key(for: $0) }
+        }
+    }
+
+    /// Persist the impact ledger and refresh the published month summary.
+    private func persistImpact() {
+        // Keep ~2 months so the current-month view always has its data while the
+        // stored blob stays bounded instead of growing a key per day forever.
+        let cutoff = DailyCostHistory.key(for: Date().addingTimeInterval(-62 * 86400))
+        impactLedger = ImpactLedger.pruned(impactLedger, keepingFrom: cutoff)
+        if let data = try? JSONEncoder().encode(impactLedger) {
+            UserDefaults.standard.set(data, forKey: "impactLedger")
+        }
+        impactThisMonth = ImpactLedger.summary(impactLedger, days: AppModel.currentMonthDayKeys())
     }
 
     /// Per-day per-agent dollars, session counts, and active minutes — the
@@ -928,6 +1010,45 @@ final class AppModel: ObservableObject {
 
     /// Fold today's running total into the persisted 7-day history. Max
     /// guards against dips when old sessions prune out mid-day.
+    /// Days recorded before the double-bill and sub-agent fixes are wrong in
+    /// UserDefaults and max-merge can never walk them back. Rebuild them once
+    /// from the transcripts. Days whose transcripts are gone keep what's stored.
+    private func recomputeStatsHistoryIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 1 else { return }
+        defaults.set(1, forKey: "statsRecomputeVersion")   // once, even if it throws
+        let adapters = self.adapters
+        Task.detached(priority: .utility) { [weak self] in
+            let totals = StatsRecompute.run(adapters: adapters)
+            await MainActor.run { self?.applyRecomputedStats(totals) }
+        }
+    }
+
+    private func applyRecomputedStats(_ totals: StatsRecompute.Totals) {
+        guard !totals.dayTotals.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        var history = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
+        var byProject = defaults.dictionary(forKey: "costByProject") as? [String: [String: Double]] ?? [:]
+        var byModel = defaults.dictionary(forKey: "costByModel") as? [String: [String: Double]] ?? [:]
+
+        // REPLACE, never max-merge: the stored value is the wrong one.
+        for (day, dollars) in totals.dayTotals { history[day] = dollars }
+        for (day, value) in totals.costByAgent { byAgent[day] = value }
+        for (day, value) in totals.costByProject { byProject[day] = value }
+        for (day, value) in totals.costByModel { byModel[day] = value }
+
+        defaults.set(history, forKey: "costHistory")
+        defaults.set(byAgent, forKey: "costByAgent")
+        defaults.set(byProject, forKey: "costByProject")
+        defaults.set(byModel, forKey: "costByModel")
+        costHistory = DailyCostHistory.series(history)
+        rebuildSparkline()
+        lastStatsTick = .distantPast   // let the next tick rebuild statsDays
+        BabysitterLog.store.info(
+            "recomputed \(totals.dayTotals.count, privacy: .public) days of cost history")
+    }
+
     private func recordCostHistory(_ todayDollars: Double) {
         let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
         let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars,

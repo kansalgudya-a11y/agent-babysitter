@@ -181,6 +181,19 @@ struct PreferencesView: View {
                     Text("Mid-task but silent for too long (time set below).")
                 }
                 .hapticTick(on: model.notifyStalled)
+                Toggle(isOn: $model.spendGuardEnabled) {
+                    Text("💸 An agent is spending fast")
+                    Text("A nudge — never a pause — when a session burns money quickly or passes the budget below. It only suggests; your work keeps running.")
+                }
+                .hapticTick(on: model.spendGuardEnabled)
+                if model.spendGuardEnabled {
+                    Picker("Nudge once a session passes", selection: $model.spendGuardBudget) {
+                        Text("$10").tag(10.0)
+                        Text("$25").tag(25.0)
+                        Text("$50").tag(50.0)
+                        Text("$100").tag(100.0)
+                    }
+                }
                 Toggle(isOn: $model.notifyLimit) {
                     Text("⚠️ An agent nears its 5-hour limit")
                     Text("One heads-up per window when usage crosses the level below, so a long task doesn't burn the whole window unnoticed.")

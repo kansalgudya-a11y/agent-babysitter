@@ -28,11 +28,16 @@ public protocol SessionReading: AnyObject {
     var dailyDollarsByModel: [Date: [String: Double]] { get }
     /// Pick up whatever changed on disk since the last call.
     func refresh() throws
+    /// Adopt the store-wide message-id registry so a conversation copied into a
+    /// resumed session's transcript is counted once, not once per file.
+    func adoptCostClaims(_ claims: MessageIDClaims)
 }
 
 public extension SessionReading {
     var lastPromptTitle: String? { nil }
     var dailyDollarsByModel: [Date: [String: Double]] { [:] }
+    /// Readers that report no usage have nothing to dedupe.
+    func adoptCostClaims(_ claims: MessageIDClaims) {}
 }
 
 extension TranscriptFileTailer: SessionReading {

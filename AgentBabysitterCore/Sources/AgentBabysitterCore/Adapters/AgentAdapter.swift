@@ -133,6 +133,13 @@ public struct ClaudeCodeAdapter: AgentAdapter {
         path.hasPrefix(transcriptRoot.path) && path.hasSuffix(".jsonl")
     }
 
+    /// Sub-agent transcripts nest under `<project>/<session>/subagents/`, so the
+    /// immediate parent directory ("subagents") is not the project — walk back
+    /// to the component directly under the root.
+    public func projectDirName(forTranscript url: URL) -> String {
+        SessionDirectoryScanner.projectDirName(for: url, under: transcriptRoot)
+    }
+
     public func sessionID(forTranscript url: URL) -> String {
         url.deletingPathExtension().lastPathComponent
     }
