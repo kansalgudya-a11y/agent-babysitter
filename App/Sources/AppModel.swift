@@ -1015,8 +1015,8 @@ final class AppModel: ObservableObject {
     /// from the transcripts. Days whose transcripts are gone keep what's stored.
     private func recomputeStatsHistoryIfNeeded() {
         let defaults = UserDefaults.standard
-        guard defaults.integer(forKey: "statsRecomputeVersion") < 1 else { return }
-        defaults.set(1, forKey: "statsRecomputeVersion")   // once, even if it throws
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 2 else { return }
+        defaults.set(2, forKey: "statsRecomputeVersion")   // once per version, even if it throws
         let adapters = self.adapters
         Task.detached(priority: .utility) { [weak self] in
             let totals = StatsRecompute.run(adapters: adapters)

@@ -16,14 +16,27 @@ public final class MessageIDClaims: @unchecked Sendable {
     private var owners: [String: String] = [:]
     private let lock = NSLock()
 
+    public enum Claim: Equatable, Sendable {
+        /// Nobody had it: count it in full.
+        case granted
+        /// This owner already counted it. Claude Code writes an assistant
+        /// message as several lines whose usage GROWS, so the owner may revise
+        /// its figure upward — but never bill it twice.
+        case alreadyOwned
+        /// Another transcript already billed it (a resumed session's copy).
+        case ownedByOther
+    }
+
     public init() {}
 
-    /// True when `owner` may count this message — i.e. nobody has yet.
-    public func claim(_ messageID: String, owner: String) -> Bool {
+    /// Who, if anyone, may count this message.
+    public func claim(_ messageID: String, owner: String) -> Claim {
         lock.lock(); defer { lock.unlock() }
-        guard owners[messageID] == nil else { return false }
+        if let existing = owners[messageID] {
+            return existing == owner ? .alreadyOwned : .ownedByOther
+        }
         owners[messageID] = owner
-        return true
+        return .granted
     }
 
     /// Forget everything `owner` claimed. Its transcript is being re-read from
