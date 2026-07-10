@@ -27,6 +27,15 @@ public final class TranscriptFileTailer {
     private let makeParser: @Sendable () -> TranscriptTailParser
     private var offset: UInt64 = 0
     private var parser: TranscriptTailParser
+    /// Store-wide message-id registry, so a conversation copied into a resumed
+    /// session's transcript is billed once, not once per file.
+    private var claims: MessageIDClaims?
+
+    /// Called by the store right after the reader is built (before any read).
+    public func adoptCostClaims(_ claims: MessageIDClaims) {
+        self.claims = claims
+        costAccumulator = CostAccumulator(claims: claims, owner: sessionID)
+    }
 
     /// A transcript with this many undecodable lines is presumed corrupt;
     /// keep watching others but stop trusting this one.
@@ -65,10 +74,13 @@ public final class TranscriptFileTailer {
 
         if size < offset {
             // File shrank — rebuild from scratch rather than reading garbage.
+            // Free our claims first: re-reading must be able to count our own
+            // messages again instead of skipping them as "already seen".
             offset = 0
             parser = makeParser()
             reducer = TranscriptReducer()
-            costAccumulator = CostAccumulator()
+            claims?.release(owner: sessionID)
+            costAccumulator = CostAccumulator(claims: claims, owner: sessionID)
         }
         guard size > offset else { return [] }
 

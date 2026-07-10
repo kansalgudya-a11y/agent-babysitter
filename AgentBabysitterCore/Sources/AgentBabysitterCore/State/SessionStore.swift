@@ -133,6 +133,9 @@ public actor SessionStore {
     /// Keyed by "<adapterID>/<sessionID>" — session ids are only unique per
     /// agent.
     private var sessions: [String: TrackedSession] = [:]
+    /// Shared across every session's cost accumulator: a resumed transcript
+    /// repeats the earlier session's messages verbatim, so bill each once.
+    private let costClaims = MessageIDClaims()
     /// Hook signals that arrived before their session was tracked (hooks can
     /// beat FSEvents latency for brand-new sessions).
     private var pendingHookSignals: [String: HookSignal] = [:]
@@ -500,7 +503,11 @@ public actor SessionStore {
         let key = "\(adapter.id)/\(id)"
         if sessions[key] == nil {
             BabysitterLog.store.info("tracking session \(key, privacy: .public)")
-            sessions[key] = TrackedSession(reader: adapter.makeReader(url: url, sessionID: id),
+            let reader = adapter.makeReader(url: url, sessionID: id)
+            // Share one message-id registry across every session so a resumed
+            // transcript's copied conversation isn't billed a second time.
+            reader.adoptCostClaims(costClaims)
+            sessions[key] = TrackedSession(reader: reader,
                                            adapter: adapter,
                                            projectDirName: projectDirName)
             if let buffered = pendingHookSignals.removeValue(forKey: key) {
@@ -521,6 +528,11 @@ public actor SessionStore {
         }.keys
         for key in stale {
             BabysitterLog.store.info("pruning idle session \(key, privacy: .public)")
+            // Hand its messages back so a surviving transcript that also holds
+            // them (a resume of this session) can count them instead.
+            if let reader = sessions[key]?.reader {
+                costClaims.release(owner: reader.sessionID)
+            }
             sessions.removeValue(forKey: key)
         }
         pendingHookSignals = pendingHookSignals.filter { _, signal in
