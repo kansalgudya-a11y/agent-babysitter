@@ -108,10 +108,14 @@ public struct SessionCost: Equatable, Sendable {
             let text = String(format: "%.1f", value)
             return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + unit
         }
+        // One decimal like the M/B branches — plain `count / 1000` FLOORS
+        // (1,900 → "1k", 47% low), which misreads as a much smaller number.
+        // Boundaries are pulled back below the value that would round UP into the
+        // next unit (999,950 → "1.0k"→"1000k"), so it rolls to "1M" cleanly.
         switch count {
         case ..<1_000: return "\(count)"
-        case ..<1_000_000: return "\(count / 1_000)k"
-        case ..<1_000_000_000: return scaled(Double(count) / 1e6, "M")
+        case ..<999_950: return scaled(Double(count) / 1e3, "k")
+        case ..<999_950_000: return scaled(Double(count) / 1e6, "M")
         default: return scaled(Double(count) / 1e9, "B")
         }
     }
@@ -256,5 +260,17 @@ extension SessionCost {
         cacheWriteTokens += sign * usage.cacheCreationInputTokens
         self.dollars += Double(sign) * dollars
         if let unknownModel { unknownModels.insert(unknownModel) }
+    }
+
+    /// Merge another cost in — used to roll a sub-agent's spend into the row of
+    /// the session that spawned it, so the visible rows account for it.
+    mutating func merge(_ other: SessionCost) {
+        dollars += other.dollars
+        totalTokens += other.totalTokens
+        inputTokens += other.inputTokens
+        outputTokens += other.outputTokens
+        cacheReadTokens += other.cacheReadTokens
+        cacheWriteTokens += other.cacheWriteTokens
+        unknownModels.formUnion(other.unknownModels)
     }
 }

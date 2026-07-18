@@ -220,10 +220,34 @@ public actor SessionStore {
 
     // MARK: - Output
 
+    /// A Claude Code sub-agent transcript lives at
+    /// `<project>/<parentSessionID>/subagents/agent-*.jsonl` — recover the parent
+    /// session id from that path so its spend can roll into the parent's row.
+    /// nil when the layout isn't the nested-subagent shape (e.g. Codex).
+    static func parentSessionID(forSidechain url: URL) -> String? {
+        let subagentsDir = url.deletingLastPathComponent()
+        guard subagentsDir.lastPathComponent == "subagents" else { return nil }
+        let parent = subagentsDir.deletingLastPathComponent().lastPathComponent
+        return parent.isEmpty ? nil : parent
+    }
+
     public func rows(at now: Date = Date(),
                      includeHidden: Bool = false) -> [SessionRow] {
         reconcileWithDisk()
         prune(at: now)
+        // Sub-agents (sidechains) spend real money that lands in the day total
+        // but get no row of their own — that's the "money with no source" a user
+        // sees. Roll each one's cost into the row of the session that spawned it
+        // (Claude Code nests them at <project>/<parentID>/subagents/…), so the
+        // visible rows account for it. The day total is unaffected — it already
+        // sums every session directly.
+        var sidechainCostByParent: [String: SessionCost] = [:]
+        for (_, tracked) in sessions where tracked.reader.isSidechain {
+            guard let parentID = Self.parentSessionID(forSidechain: tracked.reader.url)
+            else { continue }
+            let parentKey = "\(tracked.adapter.id)/\(parentID)"
+            sidechainCostByParent[parentKey, default: SessionCost()].merge(tracked.reader.cost)
+        }
         var rows: [SessionRow] = []
         for (_, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
             if let dismissedAfter = tracked.dismissedAfter,
@@ -259,6 +283,8 @@ public actor SessionStore {
                 continue
             }
             let cwd = tracked.reader.lastKnownCWD
+            var combinedCost = tracked.reader.cost
+            if let subCost = sidechainCostByParent[key] { combinedCost.merge(subCost) }
             rows.append(SessionRow(
                 id: tracked.reader.sessionID,
                 projectName: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
@@ -269,7 +295,7 @@ public actor SessionStore {
                 isUnreadable: tracked.reader.isUnreadable,
                 pid: tracked.pid,
                 cwd: cwd,
-                cost: tracked.reader.cost,
+                cost: combinedCost,
                 entrypoint: tracked.reader.lastKnownEntrypoint,
                 agentID: tracked.adapter.id,
                 agentName: tracked.adapter.displayName,

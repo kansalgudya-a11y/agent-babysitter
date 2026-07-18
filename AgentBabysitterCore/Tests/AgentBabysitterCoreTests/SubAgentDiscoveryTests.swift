@@ -52,4 +52,26 @@ final class SubAgentDiscoveryTests: XCTestCase {
         let found = SessionDirectoryScanner.recentTranscripts(under: root, maxAge: 3600)
         XCTAssertFalse(found.map(\.sessionID).contains("agent-old"))
     }
+
+    /// A sub-agent's spend rolls into the row of the session that spawned it, so
+    /// the visible rows account for it (no "money with no source").
+    func testParentSessionIDRecoveredFromSubAgentPath() {
+        let sub = root.appendingPathComponent("my-project/session-uuid/subagents/agent-abc123.jsonl")
+        XCTAssertEqual(SessionStore.parentSessionID(forSidechain: sub), "session-uuid")
+        // A normal (non-nested) transcript has no parent to roll into.
+        let plain = root.appendingPathComponent("my-project/session-uuid.jsonl")
+        XCTAssertNil(SessionStore.parentSessionID(forSidechain: plain))
+    }
+
+    func testMergeSumsCostFields() {
+        var a = SessionCost(dollars: 1.0, totalTokens: 100, inputTokens: 60,
+                            outputTokens: 40, cacheReadTokens: 500, cacheWriteTokens: 0)
+        let b = SessionCost(dollars: 2.5, totalTokens: 30, inputTokens: 10,
+                            outputTokens: 20, cacheReadTokens: 200, cacheWriteTokens: 5)
+        a.merge(b)
+        XCTAssertEqual(a.dollars, 3.5, accuracy: 1e-9)
+        XCTAssertEqual(a.totalTokens, 130)
+        XCTAssertEqual(a.cacheReadTokens, 700)
+        XCTAssertEqual(a.cacheWriteTokens, 5)
+    }
 }

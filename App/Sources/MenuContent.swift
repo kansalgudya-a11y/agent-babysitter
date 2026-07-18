@@ -583,9 +583,13 @@ struct MenuContent: View {
         HStack(spacing: 8) {
             // A brand-new install has no cost to report; skip the noise.
             if !model.noAgentsDetected {
-            Text("Today: \(model.todayCost.display(money: { model.money($0) }))\(model.costsArePlanValue ? " value" : "")")
+            // Dollars only — a compact figure that fits. Never dump the day's
+            // 4-way token breakdown here (billions of cache reads overflowed the
+            // popover into a multi-line blob); "≥" flags an unpriced model.
+            Text("Today: \(CostConfidence.amountPrefix(CostConfidence.level(for: model.todayCost)))\(model.money(model.todayCost.dollars))\(model.costsArePlanValue ? " value" : "")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
                 .onTapGesture { showCostInfo.toggle() }
                 .help(model.costsArePlanValue
                       ? "Estimated value of today's usage at API list prices — a subscription doesn't bill per token. Click for the 7-day trend."
@@ -799,28 +803,21 @@ struct SessionRowView: View {
                 }
             }
             Spacer()
-            // Price and tokens together, for every app — the price answers
-            // "what did this cost", the tokens answer "how much work was it".
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(row.cost.dollars > 0
-                     ? money(row.cost.dollars).replacingOccurrences(
-                           of: "~", with: CostConfidence.amountPrefix(CostConfidence.level(for: row.cost)))
-                     : row.cost.hasTokens ? row.cost.tokenBreakdown
-                     : row.isActivityBased ? "no token data" : "—")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                // The four-way split beneath the dollars — never a single "tok"
-                // figure, which would be either the ~2%-of-billed "new work" or
-                // the cache-read-inflated billed volume, both misleading alone.
-                if row.cost.dollars > 0, row.cost.hasTokens {
-                    Text(row.cost.tokenBreakdown)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            .help(costHelp)
+            // The row is a glance: show the ONE honest figure that fits — dollars
+            // when priced, else a status word. The four-way token split needs
+            // room (it clipped to 1-2 kinds here, hiding the biggest numbers), so
+            // it lives in the drill-in detail panel and the stats window, and the
+            // tooltip explains it. Never a single collapsed "tok" number.
+            Text(row.cost.dollars > 0
+                 ? money(row.cost.dollars).replacingOccurrences(
+                       of: "~", with: CostConfidence.amountPrefix(CostConfidence.level(for: row.cost)))
+                 : row.cost.hasUnknownPricing ? "pricing unknown"
+                 : row.isActivityBased ? "no token data"
+                 : row.cost.hasTokens ? money(0) : "—")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(costHelp)
             Button {
                 onToggleExpand()
             } label: {
@@ -900,6 +897,14 @@ struct SessionRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(cwd)
+            }
+            // The four-way token split lives here, where there's full width —
+            // the row is too narrow to show it without clipping the biggest kind.
+            if row.cost.hasTokens {
+                Text(row.cost.tokenBreakdown)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 14) {
                 Button("Jump to session") { onJump() }

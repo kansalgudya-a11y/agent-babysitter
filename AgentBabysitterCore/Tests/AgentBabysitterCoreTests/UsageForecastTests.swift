@@ -37,8 +37,18 @@ final class UsageForecastTests: XCTestCase {
     }
 
     func testEstimateNeverExceedsFullOrDropsBelowRaw() {
-        let s = snapshot(used: 80, capturedMinutesAgo: 200, resetsInMinutes: 10)
+        // Fresh (59m, within the 60m staleness ceiling) but early in the window:
+        // 80% over 91m elapsed extrapolates past 100 and must cap at 100.
+        let s = snapshot(used: 80, capturedMinutesAgo: 59, resetsInMinutes: 150)
         XCTAssertEqual(UsageForecast.estimatedCurrentPercent(s, now: now), 100)
+    }
+
+    /// A reading older than the staleness ceiling must NOT be pace-extrapolated —
+    /// without this, a days-old weekly reading extrapolated to a false ~100%,
+    /// firing a bogus "at limit" alert.
+    func testTooStaleReadingIsNotExtrapolated() {
+        let s = snapshot(used: 25, capturedMinutesAgo: 200, resetsInMinutes: 10)
+        XCTAssertNil(UsageForecast.estimatedCurrentPercent(s, now: now))
     }
 
     func testProjectsExhaustionBeforeReset() {

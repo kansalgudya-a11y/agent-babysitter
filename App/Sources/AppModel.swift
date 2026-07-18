@@ -739,7 +739,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// True while a refresh is mid-flight. refresh() has many `await` hops and
+    /// ~8 callers (FSEvents, process polls, timers, hotkeys); without this, a
+    /// slow refresh that started first can finish LAST and republish a staler
+    /// snapshot over a newer one — the numbers tick backward and dismissed rows
+    /// flash back. @MainActor makes this flag race-free.
+    private var isRefreshing = false
+    private var refreshCoalesced = false
+
     private func refresh() async {
+        if isRefreshing { refreshCoalesced = true; return }
+        isRefreshing = true
+        defer {
+            isRefreshing = false
+            // Fold every request that arrived mid-flight into ONE more pass, so
+            // the final published state always reflects the latest read.
+            if refreshCoalesced {
+                refreshCoalesced = false
+                Task { @MainActor in await self.refresh() }
+            }
+        }
         recomputeStatsHistoryIfNeeded()   // one-shot; guarded by a version key
         adoptNewlyInstalledAgents()
         let rows = await store.rows()

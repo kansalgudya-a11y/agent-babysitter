@@ -29,6 +29,11 @@ public enum UsageForecast {
         guard let used = snapshot.usedPercent,
               let resets = snapshot.resetsAt, resets > now,
               now.timeIntervalSince(snapshot.capturedAt) > staleAfter,
+              // Upper bound too (as projectedExhaustion/projectedPercentAtReset
+              // do): without it a days-old reading on a 7-day window extrapolates
+              // to a false ~100%, firing a bogus "at limit" alert. Show the raw
+              // reading instead once it's older than we'll pace-correct.
+              now.timeIntervalSince(snapshot.capturedAt) <= maximumStaleness,
               used >= minimumPercent else { return nil }
         let windowStart = resets.addingTimeInterval(-Double(snapshot.windowMinutes) * 60)
         let elapsedAtCapture = snapshot.capturedAt.timeIntervalSince(windowStart)
