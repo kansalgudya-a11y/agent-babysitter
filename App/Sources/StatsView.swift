@@ -55,6 +55,9 @@ struct StatsView: View {
     }
 
     private static let agentNames = ["claude-code": "Claude Code", "codex": "Codex",
+                                     "hermes": "Hermes",
+                                     "openclaw": "OpenClaw",
+                                     "openclaw-sdk": "OpenClaw (Claude SDK)",
                                      "antigravity": "Antigravity",
                                      "antigravity-ide": "Antigravity IDE",
                                      "antigravity-cli": "Antigravity CLI",
@@ -165,11 +168,13 @@ struct StatsView: View {
             if tokens.inputTokens + tokens.outputTokens + tokens.cacheReadTokens
                 + tokens.cacheWriteTokens > 0 {
                 Divider()
-                Text("Today's tokens — \(tokens.formattedTokens) of new work")
+                // No single headline figure: the four kinds bill so differently
+                // that any one total misleads. Show them split.
+                Text("Today's tokens")
                     .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
                 Text("input \(SessionCost.abbreviatedCount(tokens.inputTokens)) · output \(SessionCost.abbreviatedCount(tokens.outputTokens)) · cache-write \(SessionCost.abbreviatedCount(tokens.cacheWriteTokens)) · cache-read \(SessionCost.abbreviatedCount(tokens.cacheReadTokens))")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("New work is input + output + cache writes — tokens that existed once. Cache reads re-send the same context on every call, so they dwarf the rest; they're billed at a tenth the input rate and are counted in the cost above.")
+                Text("Input + output + cache writes are the work generated or freshly cached. Cache reads re-send the same context on every call, so they dwarf the rest; they're billed at a tenth the input rate and are counted in the cost above. These figures match ccusage and Claude Code's /cost.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             HStack(alignment: .bottom) {

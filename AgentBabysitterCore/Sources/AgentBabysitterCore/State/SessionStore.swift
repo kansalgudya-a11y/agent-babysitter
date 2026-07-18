@@ -27,6 +27,11 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     /// "What it's working on": the user's last real prompt, one line.
     /// Nil for agents whose storage doesn't expose prompts.
     public var title: String?
+    /// Error text when the session's LATEST assistant turn was an API error
+    /// (Claude Code's synthetic `isApiErrorMessage` line) — the row is
+    /// currently failing. Nil when the last output was healthy: an annotation
+    /// carried alongside the state, not a new lifecycle state.
+    public var apiError: String?
 
     /// Session hosted by a desktop app rather than a terminal.
     public var isDesktopApp: Bool {
@@ -45,7 +50,8 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
                 entrypoint: String? = nil,
                 agentID: String = "claude-code", agentName: String = "Claude Code",
                 transcriptURL: URL? = nil, isActivityBased: Bool = false,
-                hookDetail: HookSignal? = nil, title: String? = nil) {
+                hookDetail: HookSignal? = nil, title: String? = nil,
+                apiError: String? = nil) {
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -62,6 +68,7 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
         self.isActivityBased = isActivityBased
         self.hookDetail = hookDetail
         self.title = title
+        self.apiError = apiError
     }
 }
 
@@ -269,7 +276,8 @@ public actor SessionStore {
                 transcriptURL: tracked.reader.url,
                 isActivityBased: tracked.adapter.isActivityBased,
                 hookDetail: tracked.latestHookSignal,
-                title: tracked.reader.lastPromptTitle))
+                title: tracked.reader.lastPromptTitle,
+                apiError: tracked.reader.lastAPIError))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]

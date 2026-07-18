@@ -93,6 +93,28 @@ public struct AssistantPayload: Equatable, Sendable {
     public let toolUses: [ToolUseRef]
     public let hasText: Bool
     public let hasThinking: Bool
+    /// Claude Code writes a synthetic assistant line when an API call FAILS,
+    /// flagged by the entry's top-level `isApiErrorMessage`. This is the ONLY
+    /// reliable failure signal — `model == "<synthetic>"` is also used for
+    /// benign interrupts, so keying on it would mislabel healthy sessions.
+    public let isAPIError: Bool
+    /// The message's first text block, kept so an API-error line can report
+    /// WHAT failed (e.g. "Not logged in · Please run /login").
+    public let firstText: String?
+
+    public init(messageID: String?, model: String?, stopReason: StopReason?,
+                usage: TokenUsage?, toolUses: [ToolUseRef], hasText: Bool,
+                hasThinking: Bool, isAPIError: Bool = false, firstText: String? = nil) {
+        self.messageID = messageID
+        self.model = model
+        self.stopReason = stopReason
+        self.usage = usage
+        self.toolUses = toolUses
+        self.hasText = hasText
+        self.hasThinking = hasThinking
+        self.isAPIError = isAPIError
+        self.firstText = firstText
+    }
 }
 
 /// One `type: "user"` line: either a real prompt (`text`) or tool results

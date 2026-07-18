@@ -23,6 +23,11 @@ public final class TranscriptFileTailer {
     public private(set) var isSidechain = false
     /// Latest rate-limit reading in file order.
     public private(set) var lastUsageLimit: UsageLimitSnapshot?
+    /// Error text of the MOST RECENT assistant turn, but only when that turn
+    /// was an API error (top-level `isApiErrorMessage`); nil once a later
+    /// healthy assistant turn clears it. A session that erred and then
+    /// recovered must not read as erroring — only a current failure counts.
+    public private(set) var lastAPIError: String?
 
     private let makeParser: @Sendable () -> TranscriptTailParser
     private var offset: UInt64 = 0
@@ -81,6 +86,10 @@ public final class TranscriptFileTailer {
             reducer = TranscriptReducer()
             claims?.release(owner: sessionID)
             costAccumulator = CostAccumulator(claims: claims, owner: sessionID)
+            // The rebuild recomputes lastAPIError only if the shrunken file still
+            // has an assistant line; clear it so a compaction to assistant-less
+            // content can't leave a stale error banner on the row.
+            lastAPIError = nil
         }
         guard size > offset else { return [] }
 
@@ -98,6 +107,14 @@ public final class TranscriptFileTailer {
             if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
             if entry.isSidechain { isSidechain = true }
             if let limit = entry.usageLimit { lastUsageLimit = limit }
+            // File order is chronological: each assistant turn overwrites the
+            // verdict — an error sets it, a healthy turn clears it.
+            if case .assistant(let payload) = entry.kind {
+                // An error line with an empty text block must still show a
+                // caption, not a blank warning triangle — treat "" as absent.
+                let text = payload.firstText.flatMap { $0.isEmpty ? nil : $0 }
+                lastAPIError = payload.isAPIError ? (text ?? "API error") : nil
+            }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()
         return entries
@@ -112,9 +129,14 @@ public enum SessionDirectoryScanner {
     /// parallel sub-agents (the Task tool) write to
     /// `<root>/<project>/<session>/subagents/agent-*.jsonl` — a one-level scan
     /// never sees them, so their spend went uncounted entirely.
+    /// `excludeProjectDir` lets a caller drop whole project dirs it must not
+    /// claim — Claude Code passes it OpenClaw's SDK workspaces so those aren't
+    /// tracked twice (once per adapter); see `ClaudeCodeAdapter.isTranscript`.
     public static func recentTranscripts(under root: URL,
                                          maxAge: TimeInterval,
-                                         now: Date = Date()) -> [SessionFileInfo] {
+                                         now: Date = Date(),
+                                         excludeProjectDir: (String) -> Bool = { _ in false })
+        -> [SessionFileInfo] {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
         guard let walker = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: keys,
@@ -126,9 +148,11 @@ public enum SessionDirectoryScanner {
                   values.isRegularFile == true,
                   let modified = values.contentModificationDate,
                   now.timeIntervalSince(modified) <= maxAge else { continue }
+            let project = projectDirName(for: file, under: root)
+            if excludeProjectDir(project) { continue }
             found.append(SessionFileInfo(
                 sessionID: file.deletingPathExtension().lastPathComponent,
-                projectDirName: projectDirName(for: file, under: root),
+                projectDirName: project,
                 lastModified: modified,
                 url: file))
         }

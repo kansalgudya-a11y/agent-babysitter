@@ -256,8 +256,16 @@ final class AppModel: ObservableObject {
     }
 
     private let projectsRoot: URL
+    // OpenClawAdapter.allSurfaces() MUST precede ClaudeCodeAdapter(): the SDK
+    // surface claims OpenClaw's temp-workspace transcripts under ~/.claude/projects
+    // before Claude Code (first isTranscript match wins in transcriptsChanged).
+    // Claude Code yields those dirs only because OpenClaw is registered here to
+    // take them; a store without OpenClaw must keep counting them itself.
     private let adapters: [any AgentAdapter] =
-        [ClaudeCodeAdapter(), CodexAdapter()] + AntigravityAdapter.allSurfaces()
+        OpenClawAdapter.allSurfaces()
+        + [ClaudeCodeAdapter(excludeProjectDir: OpenClawAdapter.isSDKWorkspaceProjectDir),
+           CodexAdapter(), HermesAdapter()]
+        + AntigravityAdapter.allSurfaces()
         + GeminiAdapter.allSurfaces() + [CursorAdapter(), ManusAdapter()]
     private let store: SessionStore
     private let processWatcher: ProcessWatcher
@@ -1015,8 +1023,12 @@ final class AppModel: ObservableObject {
     /// from the transcripts. Days whose transcripts are gone keep what's stored.
     private func recomputeStatsHistoryIfNeeded() {
         let defaults = UserDefaults.standard
-        guard defaults.integer(forKey: "statsRecomputeVersion") < 2 else { return }
-        defaults.set(2, forKey: "statsRecomputeVersion")   // once per version, even if it throws
+        // Bumped to 3: the Codex cached-token double-count fix and the two added
+        // model prices change historical dollars, but persisted daily totals are
+        // frozen (StatsLedger max-merges, never lowers). Force one rebuild from
+        // the transcripts so old Codex over-counts self-correct.
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 3 else { return }
+        defaults.set(3, forKey: "statsRecomputeVersion")   // once per version, even if it throws
         let adapters = self.adapters
         Task.detached(priority: .utility) { [weak self] in
             let totals = StatsRecompute.run(adapters: adapters)
@@ -1106,7 +1118,10 @@ final class AppModel: ObservableObject {
                 startedAt: row.turnStartedAt, endedAt: Date(),
                 dollars: row.cost.dollars, totalTokens: row.cost.totalTokens,
                 transcriptPath: row.transcriptURL?.path,
-                title: row.title)
+                title: row.title,
+                inputTokens: row.cost.inputTokens, outputTokens: row.cost.outputTokens,
+                cacheReadTokens: row.cost.cacheReadTokens,
+                cacheWriteTokens: row.cost.cacheWriteTokens)
             history = SessionHistoryLedger.record(entry, into: history)
         }
         guard history != sessionHistory else { return }

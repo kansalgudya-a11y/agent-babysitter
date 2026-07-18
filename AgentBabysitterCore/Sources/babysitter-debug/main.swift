@@ -4,8 +4,13 @@ import AgentBabysitterCore
 // Dogfooding tool: run the exact pipeline the menu bar renders from and
 // print what it shows. `swift run babysitter-debug`
 
+// OpenClawAdapter.allSurfaces() MUST precede ClaudeCodeAdapter() so the SDK
+// surface claims OpenClaw's temp-workspace transcripts first (mirrors AppModel).
 let adapters: [any AgentAdapter] =
-    [ClaudeCodeAdapter(), CodexAdapter()] + AntigravityAdapter.allSurfaces()
+    OpenClawAdapter.allSurfaces()
+    + [ClaudeCodeAdapter(excludeProjectDir: OpenClawAdapter.isSDKWorkspaceProjectDir),
+       CodexAdapter(), HermesAdapter()]
+    + AntigravityAdapter.allSurfaces()
     + GeminiAdapter.allSurfaces() + [CursorAdapter(), ManusAdapter()]
 let store = SessionStore(configuration: .init(
     projectsRoot: ClaudeCodeAdapter().transcriptRoot,

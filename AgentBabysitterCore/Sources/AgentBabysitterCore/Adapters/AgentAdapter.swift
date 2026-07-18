@@ -45,6 +45,13 @@ public protocol AgentAdapter: Sendable {
     func parseLine(_ line: Data) -> LineParseResult
     /// Extract this agent's pids from `ps -axo pid=,comm=` / `pid=,args=`.
     func agentPIDs(psComm: String, psArgs: String) -> [Int32]
+    /// Once a pid's cwd is resolved, whether it truly belongs to this agent.
+    /// Defaults to true. Surfaces that BORROW another agent's process identity
+    /// (OpenClaw's SDK surface reuses the `claude` process) override this so a
+    /// plain `claude` process isn't miscounted as theirs — otherwise the agent
+    /// reads as "running" whenever the host agent runs, faking presence and a
+    /// format-drift warning.
+    func claimsProcess(cwd: String) -> Bool
     /// Pair live processes with sessions; unmatched sessions read as Ended.
     func match(processes: [RunningProcess],
                candidates: [SessionMatchCandidate]) -> [String: Int32]
@@ -84,6 +91,8 @@ public protocol AgentAdapter: Sendable {
 public extension AgentAdapter {
     func liveNetworkBytes(pid: Int32) -> Int? { nil }
 
+    func claimsProcess(cwd: String) -> Bool { true }
+
     func canonicalTranscriptURL(forPath path: String) -> URL {
         URL(fileURLWithPath: path)
     }
@@ -120,17 +129,36 @@ public struct ClaudeCodeAdapter: AgentAdapter {
     public let focusBundleIdentifiers = ["com.anthropic.claudefordesktop"]
     public let cliExecutableNames = ["claude"]
 
+    /// Project dirs this adapter must leave to someone else. Some agents drive
+    /// Claude Code through its SDK and write Claude-Code-FORMAT transcripts under
+    /// our root; whoever registers that agent passes its predicate here, because
+    /// a file may be tracked by only ONE adapter — `SessionStore.transcriptsChanged`
+    /// dispatches a path to the FIRST adapter whose `isTranscript` matches, and the
+    /// store-wide `MessageIDClaims` then hands the cost to whichever reads first,
+    /// leaving the other row at $0.
+    ///
+    /// Defaults to excluding nothing: a store that does not register the other
+    /// agent must still count these sessions, or their spend silently vanishes.
+    private let excludeProjectDir: @Sendable (String) -> Bool
+
     public init(transcriptRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/projects")) {
+        .appendingPathComponent(".claude/projects"),
+                excludeProjectDir: @escaping @Sendable (String) -> Bool = { _ in false }) {
         self.transcriptRoot = transcriptRoot
+        self.excludeProjectDir = excludeProjectDir
     }
 
     public func recentTranscripts(maxAge: TimeInterval, now: Date) -> [SessionFileInfo] {
-        SessionDirectoryScanner.recentTranscripts(under: transcriptRoot, maxAge: maxAge, now: now)
+        SessionDirectoryScanner.recentTranscripts(
+            under: transcriptRoot, maxAge: maxAge, now: now,
+            excludeProjectDir: excludeProjectDir)
     }
 
     public func isTranscript(path: String) -> Bool {
-        path.hasPrefix(transcriptRoot.path) && path.hasSuffix(".jsonl")
+        guard path.hasPrefix(transcriptRoot.path), path.hasSuffix(".jsonl") else { return false }
+        let project = SessionDirectoryScanner.projectDirName(
+            for: URL(fileURLWithPath: path), under: transcriptRoot)
+        return !excludeProjectDir(project)
     }
 
     /// Sub-agent transcripts nest under `<project>/<session>/subagents/`, so the

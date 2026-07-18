@@ -139,7 +139,8 @@ struct MenuContent: View {
     private var groupedRows: [(agentID: String, agentName: String, rows: [SessionRow])] {
         let order = ["claude-code": 0, "codex": 1, "manus": 2, "cursor": 3,
                      "antigravity": 4, "antigravity-ide": 5, "antigravity-cli": 6,
-                     "gemini": 7, "gemini-cli": 8]
+                     "hermes": 7, "openclaw": 8, "openclaw-sdk": 9,
+                     "gemini": 10, "gemini-cli": 11]
         // Never show activity for an app that isn't installed (a running
         // session is always counted as installed, so this can't hide a live
         // one — only stale rows from an uninstalled app).
@@ -210,7 +211,8 @@ struct MenuContent: View {
     private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?, running: Bool)] {
         let order = ["claude-code": 0, "codex": 1, "manus": 2, "cursor": 3,
                      "antigravity": 4, "antigravity-ide": 5, "antigravity-cli": 6,
-                     "gemini": 7, "gemini-cli": 8]
+                     "hermes": 7, "openclaw": 8, "openclaw-sdk": 9,
+                     "gemini": 10, "gemini-cli": 11]
         let now = Date()
         // An agent whose window has rolled over shows a "reset" bar with
         // nothing to act on — sink those below agents with a live reading,
@@ -597,7 +599,7 @@ struct MenuContent: View {
             .buttonStyle(.borderless)
             .popover(isPresented: $showCostInfo, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Estimated from token usage at API list prices.\nOn a subscription plan (Pro/Max) this is not an extra charge — it shows the value of today's usage.\nToken counts are new work (input + output + newly cached); cached-context re-reads are priced in but not counted.")
+                    Text("Estimated from token usage at API list prices — cache reads included — and covers every session today, background sub-agents too. On a subscription plan (Pro/Max) this isn't an extra charge; it's the value of today's usage. Per-session rows show that session's running total since it started, so they won't sum to today.")
                         .font(.caption)
                     if model.costHistory.count > 1 {
                         Divider()
@@ -786,6 +788,15 @@ struct SessionRowView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // The session's latest turn was an API error, so its cost reads
+                // $0 and it would otherwise pass for a cheap healthy row. Surface
+                // WHAT failed where the cost/detail caption goes.
+                if let apiError = row.apiError {
+                    Label(apiError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             // Price and tokens together, for every app — the price answers
@@ -794,13 +805,19 @@ struct SessionRowView: View {
                 Text(row.cost.dollars > 0
                      ? money(row.cost.dollars).replacingOccurrences(
                            of: "~", with: CostConfidence.amountPrefix(CostConfidence.level(for: row.cost)))
-                     : row.cost.totalTokens > 0 ? "\(row.cost.formattedTokens) tok" : "—")
+                     : row.cost.hasTokens ? row.cost.tokenBreakdown
+                     : row.isActivityBased ? "no token data" : "—")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                if row.cost.dollars > 0, row.cost.totalTokens > 0 {
-                    Text("\(row.cost.formattedTokens) tok")
+                // The four-way split beneath the dollars — never a single "tok"
+                // figure, which would be either the ~2%-of-billed "new work" or
+                // the cache-read-inflated billed volume, both misleading alone.
+                if row.cost.dollars > 0, row.cost.hasTokens {
+                    Text(row.cost.tokenBreakdown)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
             .help(costHelp)
@@ -827,7 +844,7 @@ struct SessionRowView: View {
         .accessibilityLabel("\(row.projectName), \(row.state.label)"
             + (row.title.map { $0 == row.projectName ? "" : ", working on \($0)" } ?? "")
             + (row.cost.dollars > 0 ? ", about \(Int(row.cost.dollars)) dollars" : "")
-            + (row.cost.totalTokens > 0 ? ", \(row.cost.formattedTokens) tokens" : ""))
+            + (row.cost.hasTokens ? ", \(row.cost.tokenBreakdown)" : ""))
         .accessibilityHint("Jumps to this session")
         // The chevron is swallowed by children:.ignore, so expose the drill-in
         // toggle as an action on the combined element instead.
@@ -931,14 +948,22 @@ struct SessionRowView: View {
 
     /// Plain-language cost explanation for the row's trailing numbers.
     private var costHelp: String {
+        // Tokens are shown split four ways — in · out · write · read — because no
+        // single figure is honest: cache reads re-send the same context each call
+        // and bill at 1/10th input, so a lone total is either ~2% of billed volume
+        // or a cache-inflated number many times the distinct tokens that existed.
+        let tokenNote = "Tokens: in + out are new work, cache writes are new work billed at a premium, cache reads re-send the cached context each call at 1/10th the input rate. This matches ccusage and Claude Code's /cost."
+        if row.isActivityBased {
+            return "This agent doesn't record token usage on disk, so no counts are shown. \(row.cost.dollars > 0 ? "" : "")".trimmingCharacters(in: .whitespaces)
+        }
         if row.cost.hasUnknownPricing && row.cost.dollars == 0 {
-            return "Tokens used this session. No price is shown because this model isn't in the price list — dollars are never guessed."
+            return "No price is shown because this model isn't in the price list — dollars are never guessed. \(tokenNote)"
         }
         if row.cost.hasUnknownPricing && row.cost.dollars > 0 {
-            return "At least this much, from the priced models in this session at API list prices — one or more models aren't in the price list, so the real total is higher."
+            return "At least this much: priced from the models we know at API list prices, but one or more models aren't in the list, so the real total is higher. \(tokenNote)"
         }
         if row.cost.dollars > 0 {
-            return "Estimated from this session's tokens at API list prices. On a subscription plan this isn't an extra charge — it's the value of the usage."
+            return "This session's running total since it started (not just today). Estimated from all billed tokens — cache reads included — at API list prices; on a subscription plan it's the value of the usage, not an extra charge. \(tokenNote)"
         }
         return "No readable usage for this session yet."
     }
@@ -975,13 +1000,13 @@ extension SessionCost {
     /// "~$1.22" (in the user's currency), or token counts when pricing is
     /// unknown — never guessed dollars. `money` converts a USD amount.
     func display(money: (Double) -> String) -> String {
-        if dollars == 0 && totalTokens == 0 && !hasUnknownPricing {
+        if dollars == 0 && !hasTokens && !hasUnknownPricing {
             return "—"  // no readable usage at all (e.g. Antigravity)
         }
         if hasUnknownPricing {
             return dollars > 0
-                ? "\(money(dollars)) + \(formattedTokens) tokens"
-                : "\(formattedTokens) tokens"
+                ? "\(money(dollars)) + \(tokenBreakdown)"
+                : tokenBreakdown
         }
         return money(dollars)
     }
@@ -1003,6 +1028,8 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Label("Claude Code — terminal or desktop app", systemImage: "checkmark.circle")
                 Label("Codex — CLI or desktop app", systemImage: "checkmark.circle")
+                Label("Hermes — Nous Research agent CLI", systemImage: "checkmark.circle")
+                Label("OpenClaw — native gateway or Claude SDK", systemImage: "checkmark.circle")
                 Label("Antigravity — app, IDE, or agy CLI", systemImage: "checkmark.circle")
                 Label("Gemini — desktop app or CLI", systemImage: "checkmark.circle")
                 Label("Cursor — agent (composer) sessions", systemImage: "checkmark.circle")

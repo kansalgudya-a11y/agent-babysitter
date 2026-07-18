@@ -17,11 +17,19 @@ public struct SessionHistoryEntry: Equatable, Sendable, Codable, Identifiable {
     /// The user's last prompt ("what it was working on"). Optional so
     /// history files written before this field decode unchanged.
     public var title: String?
+    /// The token split, persisted so the four-way breakdown survives after the
+    /// agent's transcripts are pruned. Optional: entries written before this
+    /// existed decode with nil, and fall back to the totalTokens-only figure.
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
 
     public init(id: String, sessionID: String, agentID: String, agentName: String,
                 project: String, cwd: String?, startedAt: Date?, endedAt: Date,
                 dollars: Double, totalTokens: Int, transcriptPath: String?,
-                title: String? = nil) {
+                title: String? = nil, inputTokens: Int? = nil, outputTokens: Int? = nil,
+                cacheReadTokens: Int? = nil, cacheWriteTokens: Int? = nil) {
         self.id = id
         self.sessionID = sessionID
         self.agentID = agentID
@@ -34,6 +42,21 @@ public struct SessionHistoryEntry: Equatable, Sendable, Codable, Identifiable {
         self.totalTokens = totalTokens
         self.transcriptPath = transcriptPath
         self.title = title
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+    }
+
+    /// Reconstructs a `SessionCost` for display. Legacy entries (no persisted
+    /// split) yield a cost carrying only `totalTokens`, so `hasTokens` is false
+    /// and the view falls back to the single legacy figure rather than a bogus
+    /// all-zero breakdown.
+    public var cost: SessionCost {
+        SessionCost(dollars: dollars, totalTokens: totalTokens,
+                    inputTokens: inputTokens ?? 0, outputTokens: outputTokens ?? 0,
+                    cacheReadTokens: cacheReadTokens ?? 0,
+                    cacheWriteTokens: cacheWriteTokens ?? 0)
     }
 }
 

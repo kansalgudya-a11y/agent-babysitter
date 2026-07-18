@@ -35,9 +35,19 @@ public struct ShellProcessScanner: ProcessScanning {
         let lsofOutput = (try? await run("/usr/sbin/lsof",
                                          ["-a", "-d", "cwd", "-Fn", "-p", pidList])) ?? ""
         let cwds = ProcessOutputParser.cwdsByPID(fromLSOF: lsofOutput)
-        return pidsByAdapter.mapValues { pids in
-            pids.compactMap { pid in cwds[pid].map { RunningProcess(pid: pid, cwd: $0) } }
+        let adaptersByID = Dictionary(uniqueKeysWithValues: adapters.map { ($0.id, $0) })
+        var result: [String: [RunningProcess]] = [:]
+        for (id, pids) in pidsByAdapter {
+            // Resolve each pid's cwd, then let the adapter disown processes that
+            // aren't really its own — a borrowed-identity surface (openclaw-sdk
+            // reuses `claude`) must not read as running on every plain `claude`.
+            result[id] = pids.compactMap { pid in
+                guard let cwd = cwds[pid],
+                      adaptersByID[id]?.claimsProcess(cwd: cwd) ?? true else { return nil }
+                return RunningProcess(pid: pid, cwd: cwd)
+            }
         }
+        return result
     }
 
     private func run(_ launchPath: String, _ arguments: [String]) async throws -> String {

@@ -21,6 +21,10 @@ public protocol SessionReading: AnyObject {
     var dailyCosts: [Date: SessionCost] { get }
     /// Latest subscription rate-limit reading seen in this transcript.
     var usageLimit: UsageLimitSnapshot? { get }
+    /// Error text of the latest assistant turn when that turn was an API
+    /// error (top-level `isApiErrorMessage`); nil when the latest output was
+    /// healthy. Only line-parsing readers surface it — others default to nil.
+    var lastAPIError: String? { get }
     /// One-line caption of the user's last real prompt — "what this session
     /// is working on". Nil when the format doesn't expose prompts.
     var lastPromptTitle: String? { get }
@@ -36,6 +40,8 @@ public protocol SessionReading: AnyObject {
 public extension SessionReading {
     var lastPromptTitle: String? { nil }
     var dailyDollarsByModel: [Date: [String: Double]] { [:] }
+    /// Readers over opaque storage can't tell an API error from healthy output.
+    var lastAPIError: String? { nil }
     /// Readers that report no usage have nothing to dedupe.
     func adoptCostClaims(_ claims: MessageIDClaims) {}
 }

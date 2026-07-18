@@ -2,6 +2,8 @@
   "updated": "2026-07-06",
   "comment": "USD per million tokens. Anthropic: cacheRead = 0.1x input; cacheWrite5m = 1.25x input; cacheWrite1h = 2x input; sonnet-5 uses sticker pricing, not the intro rate that expires 2026-08-31 (platform.claude.com via claude-api skill, cached 2026-06-24). OpenAI: cacheRead = cached-input price, cache writes are free (both write fields 0); developers.openai.com/api/docs/pricing checked 2026-07-06.",
   "models": {
+    "gpt-5.6-sol":       { "input": 5.0,  "output": 30.0, "cacheRead": 0.5,   "cacheWrite5m": 0.0,   "cacheWrite1h": 0.0 },
+    "codex-auto-review": { "input": 2.5,  "output": 15.0, "cacheRead": 0.25,  "cacheWrite5m": 0.0,   "cacheWrite1h": 0.0 },
     "gpt-5.5":           { "input": 5.0,  "output": 30.0, "cacheRead": 0.5,   "cacheWrite5m": 0.0,   "cacheWrite1h": 0.0 },
     "gpt-5.4":           { "input": 2.5,  "output": 15.0, "cacheRead": 0.25,  "cacheWrite5m": 0.0,   "cacheWrite1h": 0.0 },
     "gpt-5.3-codex":     { "input": 1.75, "output": 14.0, "cacheRead": 0.175, "cacheWrite5m": 0.0,   "cacheWrite1h": 0.0 },

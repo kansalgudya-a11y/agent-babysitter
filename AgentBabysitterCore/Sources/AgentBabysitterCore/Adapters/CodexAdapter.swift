@@ -259,14 +259,31 @@ enum CodexRolloutParser {
                 let input = totals?["input_tokens"] as? Int ?? 0
                 let cached = totals?["cached_input_tokens"] as? Int ?? 0
                 let output = totals?["output_tokens"] as? Int ?? 0
-                let (dIn, dCached, dOut) = usageState?.delta(input: input,
-                                                             cachedInput: cached,
-                                                             output: output)
-                    ?? (input, cached, output)
-                let usage = TokenUsage(inputTokens: dIn,
+                // Some rollouts emit a corrupt reading — all components 0 but a
+                // non-zero total_tokens. Feeding {0,0,0} to the cumulative delta
+                // would look like a counter RESET and re-count the whole preceding
+                // cumulative on the next real event. Skip the delta entirely and
+                // leave the baseline untouched; the reading carries no usable split.
+                let usage: TokenUsage
+                if input == 0 && cached == 0 && output == 0 {
+                    usage = TokenUsage(inputTokens: 0, outputTokens: 0,
+                                       cacheCreationInputTokens: 0, cacheReadInputTokens: 0)
+                } else {
+                    let (dIn, dCached, dOut) = usageState?.delta(input: input,
+                                                                 cachedInput: cached,
+                                                                 output: output)
+                        ?? (input, cached, output)
+                    // OpenAI nests the cached prefix INSIDE input_tokens (verified on
+                    // real rollouts: input_tokens + output_tokens == total_tokens, with
+                    // cached ⊆ input), unlike Anthropic's disjoint buckets. Subtract it
+                    // so `inputTokens` is the genuinely-new input and the cached prefix
+                    // is only counted once, as cacheRead — otherwise it's billed at the
+                    // full input rate AND the cache-read rate (a 3.4x cost over-charge).
+                    usage = TokenUsage(inputTokens: max(0, dIn - dCached),
                                        outputTokens: dOut,
                                        cacheCreationInputTokens: 0,
                                        cacheReadInputTokens: dCached)
+                }
                 // Subscription 5h/weekly window readings ride along on
                 // token_count. Primary is the 300-minute window.
                 var limit: UsageLimitSnapshot?

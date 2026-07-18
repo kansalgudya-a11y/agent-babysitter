@@ -81,6 +81,28 @@ public struct SessionCost: Equatable, Sendable {
     /// Abbreviated `allTokens` — the figure the UI displays as "tok".
     public var formattedAllTokens: String { Self.abbreviatedCount(allTokens) }
 
+    /// True when this cost carries any token counts at all. False both for an
+    /// activity-based agent (no data on disk) and a genuinely-idle session — the
+    /// caller distinguishes those by the adapter's `isActivityBased`.
+    public var hasTokens: Bool {
+        inputTokens != 0 || outputTokens != 0 || cacheReadTokens != 0 || cacheWriteTokens != 0
+    }
+
+    /// The four token kinds, each abbreviated and labeled, zero kinds omitted —
+    /// e.g. "2k in · 800 out · 1.5M write · 9.8M read". No single headline: input
+    /// and output are new work, cache writes are new work billed at a premium,
+    /// cache reads re-send the same context each call and bill at 1/10th input,
+    /// so collapsing them to one number always misleads one way or the other.
+    /// Empty string when there are no tokens.
+    public var tokenBreakdown: String {
+        var parts: [String] = []
+        if inputTokens > 0 { parts.append("\(Self.abbreviatedCount(inputTokens)) in") }
+        if outputTokens > 0 { parts.append("\(Self.abbreviatedCount(outputTokens)) out") }
+        if cacheWriteTokens > 0 { parts.append("\(Self.abbreviatedCount(cacheWriteTokens)) write") }
+        if cacheReadTokens > 0 { parts.append("\(Self.abbreviatedCount(cacheReadTokens)) read") }
+        return parts.joined(separator: " · ")
+    }
+
     public static func abbreviatedCount(_ count: Int) -> String {
         func scaled(_ value: Double, _ unit: String) -> String {
             let text = String(format: "%.1f", value)

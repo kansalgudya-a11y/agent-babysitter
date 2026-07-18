@@ -57,11 +57,16 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertFalse(tailer.isSidechain)
 
         // token_count usage priced via the model from turn_context (gpt-5.5:
-        // $5/M input, $30/M output, $0.50/M cached input, no cache-write
-        // fees): 5000·5 + 800·30 + 3000·0.5 per million = $0.0505. Cached
-        // re-reads (3000) are priced but excluded from the token count.
-        XCTAssertEqual(tailer.costAccumulator.cost.totalTokens, 5800)
-        XCTAssertEqual(tailer.costAccumulator.cost.dollars, 0.0505, accuracy: 1e-9)
+        // $5/M input, $30/M output, $0.50/M cached input, no cache-write fees).
+        // OpenAI nests cached (3000) INSIDE input_tokens (5000), so fresh input
+        // is 2000; totalTokens = 2000 + 800 = 2800 (cached excluded), and
+        // dollars = 2000·5 + 800·30 + 3000·0.5 per million = $0.0355. The cached
+        // prefix is billed once (as cache-read), not twice.
+        XCTAssertEqual(tailer.costAccumulator.cost.inputTokens, 2000)
+        XCTAssertEqual(tailer.costAccumulator.cost.cacheReadTokens, 3000)
+        XCTAssertEqual(tailer.costAccumulator.cost.outputTokens, 800)
+        XCTAssertEqual(tailer.costAccumulator.cost.totalTokens, 2800)
+        XCTAssertEqual(tailer.costAccumulator.cost.dollars, 0.0355, accuracy: 1e-9)
         XCTAssertFalse(tailer.costAccumulator.cost.hasUnknownPricing)
     }
 
@@ -121,6 +126,40 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertEqual(tokens(150), 50, "cumulative counter -> delta")
         XCTAssertEqual(tokens(150), 0, "no growth -> nothing new (usage.totalTokens 0 is skipped by cost)")
         XCTAssertEqual(tokens(40), 40, "counter reset -> fresh count")
+    }
+
+    /// OpenAI nests cached inside input_tokens; the parser must subtract it so
+    /// the cached prefix isn't billed at the full input rate AND as cache-read.
+    private func codexUsage(_ state: CodexRolloutParser.UsageState,
+                            input: Int, cached: Int, output: Int) -> TokenUsage? {
+        let line = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":\(input),\"cached_input_tokens\":\(cached),\"output_tokens\":\(output),\"total_tokens\":\(input + output)}}}}"
+        guard case .entry(let entry) = CodexRolloutParser.parse(Data(line.utf8), usageState: state),
+              case .assistant(let payload) = entry.kind else { return nil }
+        return payload.usage
+    }
+
+    func testCachedInputIsSubtractedNotDoubleCounted() throws {
+        let state = CodexRolloutParser.UsageState()
+        let u = try XCTUnwrap(codexUsage(state, input: 100, cached: 60, output: 10))
+        XCTAssertEqual(u.inputTokens, 40, "fresh input = input(100) - cached(60)")
+        XCTAssertEqual(u.cacheReadInputTokens, 60, "cached counted once, as cache-read")
+        XCTAssertEqual(u.outputTokens, 10)
+    }
+
+    /// A corrupt reading (all components 0 but a non-zero total) must NOT reset
+    /// the cumulative baseline — doing so re-counts the whole preceding cumulative
+    /// on the next real event (a spurious over-count).
+    func testCorruptZeroReadingDoesNotResetTheBaseline() throws {
+        let state = CodexRolloutParser.UsageState()
+        let a = try XCTUnwrap(codexUsage(state, input: 100, cached: 0, output: 0))
+        XCTAssertEqual(a.inputTokens, 100)
+        // Corrupt: {0,0,0}. Skipped — contributes nothing, leaves baseline at 100.
+        let corrupt = try XCTUnwrap(codexUsage(state, input: 0, cached: 0, output: 0))
+        XCTAssertEqual(corrupt.inputTokens, 0)
+        // Next real cumulative reading: delta is 250-100 = 150, NOT 250.
+        let c = try XCTUnwrap(codexUsage(state, input: 250, cached: 0, output: 0))
+        XCTAssertEqual(c.inputTokens, 150,
+                       "baseline preserved: 250-100, not a reset-induced 250")
     }
 
     func testRateLimitSnapshotIsExtracted() throws {

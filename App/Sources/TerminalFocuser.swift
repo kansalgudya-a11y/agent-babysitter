@@ -30,6 +30,9 @@ enum TerminalFocuser {
     static let agentBundleIDs: [String: [String]] = [
         "claude-code": ["com.anthropic.claudefordesktop"],
         "codex": ["com.openai.codex"],
+        "hermes": ["com.nousresearch.hermes", "com.nousresearch.hermes.setup"],
+        // OpenClaw ships no macOS .app (CLI-only, like antigravity-cli/gemini-cli),
+        // so it gets no entry — focus falls back to the session's process ancestry.
         "antigravity": ["com.google.antigravity"],
         "antigravity-ide": ["com.google.antigravity-ide"],
         "gemini": ["com.google.GeminiMacOS"],

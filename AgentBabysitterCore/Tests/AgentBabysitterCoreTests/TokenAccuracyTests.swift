@@ -59,4 +59,19 @@ final class TokenAccuracyTests: XCTestCase {
         XCTAssertEqual(acc.cost.dollars, 25, accuracy: 0.01,
                        "a parallel sub-agent's tokens cost real money")
     }
+
+    /// The four-way split display: every non-zero kind, labeled; zeros omitted.
+    func testTokenBreakdownShowsEachKindAndOmitsZeros() {
+        let cost = SessionCost(dollars: 1, inputTokens: 2_000, outputTokens: 800,
+                               cacheReadTokens: 9_800_000, cacheWriteTokens: 1_500_000)
+        XCTAssertEqual(cost.tokenBreakdown, "2k in · 800 out · 1.5M write · 9.8M read")
+        XCTAssertTrue(cost.hasTokens)
+
+        let inputOnly = SessionCost(dollars: 0, inputTokens: 500)
+        XCTAssertEqual(inputOnly.tokenBreakdown, "500 in", "zero kinds are omitted")
+
+        let empty = SessionCost(dollars: 0)
+        XCTAssertEqual(empty.tokenBreakdown, "")
+        XCTAssertFalse(empty.hasTokens, "an all-zero cost has no tokens to show")
+    }
 }

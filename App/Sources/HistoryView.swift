@@ -67,9 +67,16 @@ struct HistoryView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text(entry.dollars > 0 ? model.money(entry.dollars)
-                     : "\(SessionCost.abbreviatedCount(entry.totalTokens)) tok")
+                // No false "0 tok": show dollars when priced, else the token split
+                // when we persisted it, else the legacy single figure, else an
+                // em-dash — never abbreviatedCount(0) rendered as "0".
+                Text(historyAmount(entry))
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if entry.dollars > 0, entry.cost.hasTokens {
+                    Text(entry.cost.tokenBreakdown)
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.tail)
+                }
                 if let path = entry.transcriptPath, !path.isEmpty {
                     Button("Open transcript") {
                         NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
@@ -79,6 +86,15 @@ struct HistoryView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// The trailing amount: dollars when priced, the token split when it was
+    /// persisted, the legacy single figure for old entries, else an em-dash.
+    private func historyAmount(_ entry: SessionHistoryEntry) -> String {
+        if entry.dollars > 0 { return model.money(entry.dollars) }
+        if entry.cost.hasTokens { return entry.cost.tokenBreakdown }
+        if entry.totalTokens > 0 { return "\(SessionCost.abbreviatedCount(entry.totalTokens)) tok" }
+        return "—"
     }
 
     private static func dayLabel(_ day: Date) -> String {

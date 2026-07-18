@@ -35,7 +35,11 @@ public enum TranscriptLineParser {
         case "user":
             kind = .user(userPayload(object["message"] as? [String: Any]))
         case "assistant":
-            kind = .assistant(assistantPayload(object["message"] as? [String: Any]))
+            // `isApiErrorMessage` is a TOP-LEVEL flag on the line, not inside
+            // `message` — it marks a synthetic assistant turn Claude Code
+            // writes when the API call failed.
+            kind = .assistant(assistantPayload(object["message"] as? [String: Any],
+                                               isAPIError: object["isApiErrorMessage"] as? Bool ?? false))
         default:
             kind = .meta(rawType: type)
         }
@@ -75,13 +79,17 @@ public enum TranscriptLineParser {
                            toolResults: results)
     }
 
-    private static func assistantPayload(_ message: [String: Any]?) -> AssistantPayload {
+    private static func assistantPayload(_ message: [String: Any]?,
+                                         isAPIError: Bool) -> AssistantPayload {
         var toolUses: [ToolUseRef] = []
         var hasText = false
         var hasThinking = false
+        var firstText: String?
         for block in message?["content"] as? [[String: Any]] ?? [] {
             switch block["type"] as? String {
-            case "text": hasText = true
+            case "text":
+                hasText = true
+                if firstText == nil { firstText = block["text"] as? String }
             case "thinking": hasThinking = true
             case "tool_use":
                 if let id = block["id"] as? String, let name = block["name"] as? String {
@@ -98,7 +106,9 @@ public enum TranscriptLineParser {
             usage: (message?["usage"] as? [String: Any]).flatMap(tokenUsage),
             toolUses: toolUses,
             hasText: hasText,
-            hasThinking: hasThinking
+            hasThinking: hasThinking,
+            isAPIError: isAPIError,
+            firstText: firstText
         )
     }
 
