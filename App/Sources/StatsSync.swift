@@ -81,7 +81,7 @@ enum StatsSync {
             ledgers.append(StatsLedger.Ledger(
                 costByAgent: wire.costByAgent, costByProject: wire.costByProject,
                 costByModel: wire.costByModel ?? [:],
-                sessionCounts: wire.sessionCounts, todaySessionIDs: [],
+                sessionCounts: wire.sessionCounts, countedSessionIDs: [],
                 activeMinutes: wire.activeMinutes))
         }
         return StatsLedger.summed(ledgers)

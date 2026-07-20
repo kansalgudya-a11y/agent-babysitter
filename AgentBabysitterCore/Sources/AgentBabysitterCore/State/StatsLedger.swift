@@ -10,20 +10,24 @@ public enum StatsLedger {
         public var costByProject: [String: [String: Double]]
         public var costByModel: [String: [String: Double]]
         public var sessionCounts: [String: Int]
-        public var todaySessionIDs: Set<String>
+        /// Every session id ever counted (all-time, persisted). A session is
+        /// counted ONCE, on the day it was first seen, so summing sessionCounts
+        /// across a range gives DISTINCT sessions — a multi-day session no longer
+        /// adds one per day it was alive.
+        public var countedSessionIDs: Set<String>
         public var activeMinutes: [String: Double]
 
         public init(costByAgent: [String: [String: Double]] = [:],
                     costByProject: [String: [String: Double]] = [:],
                     costByModel: [String: [String: Double]] = [:],
                     sessionCounts: [String: Int] = [:],
-                    todaySessionIDs: Set<String> = [],
+                    countedSessionIDs: Set<String> = [],
                     activeMinutes: [String: Double] = [:]) {
             self.costByAgent = costByAgent
             self.costByProject = costByProject
             self.costByModel = costByModel
             self.sessionCounts = sessionCounts
-            self.todaySessionIDs = todaySessionIDs
+            self.countedSessionIDs = countedSessionIDs
             self.activeMinutes = activeMinutes
         }
     }
@@ -76,7 +80,7 @@ public enum StatsLedger {
                       costByProject: mergeNested(a.costByProject, b.costByProject),
                       costByModel: mergeNested(a.costByModel, b.costByModel),
                       sessionCounts: mergeMax(a.sessionCounts, b.sessionCounts),
-                      todaySessionIDs: a.todaySessionIDs.union(b.todaySessionIDs),
+                      countedSessionIDs: a.countedSessionIDs.union(b.countedSessionIDs),
                       activeMinutes: mergeMax(a.activeMinutes, b.activeMinutes))
     }
 
@@ -109,8 +113,12 @@ public enum StatsLedger {
         }
         ledger.costByModel[todayKey] = todayModels
 
-        ledger.todaySessionIDs.formUnion(visibleSessionIDs)
-        ledger.sessionCounts[todayKey] = ledger.todaySessionIDs.count
+        // Count each session once, on its first-seen day, so a range sum is the
+        // distinct-session count (not sessions-times-days-alive).
+        for id in visibleSessionIDs where !ledger.countedSessionIDs.contains(id) {
+            ledger.countedSessionIDs.insert(id)
+            ledger.sessionCounts[todayKey, default: 0] += 1
+        }
 
         if anyWorking {
             ledger.activeMinutes[todayKey, default: 0]

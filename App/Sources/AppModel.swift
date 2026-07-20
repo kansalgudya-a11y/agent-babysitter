@@ -946,20 +946,27 @@ final class AppModel: ObservableObject {
             for (day, ids) in legacy where counts[day] == nil { counts[day] = ids.count }
             defaults.removeObject(forKey: "sessionsSeen")
         }
-        let todaySeen = defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]] ?? [:]
+        // All session ids ever counted (all-time), so each session is counted
+        // once — on its first-seen day — and a range sum is a distinct count.
+        // Migrate the old today-only key if present.
+        let countedIDs = Set(defaults.stringArray(forKey: "countedSessionIDs")
+            ?? (defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]])?
+                .values.flatMap { $0 } ?? [])
         var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
 
+        // One consistent snapshot of today's breakdowns (not three racing calls).
+        let breakdown = await store.todayBreakdown()
         // This machine's own ledger — always persisted locally as-is (never
         // overwritten with cross-machine data).
         let ledger = StatsLedger.ticked(
             .init(costByAgent: byAgent, costByProject: byProject, costByModel: byModel,
                   sessionCounts: counts,
-                  todaySessionIDs: Set(todaySeen[today] ?? []),
+                  countedSessionIDs: countedIDs,
                   activeMinutes: activeMinutes),
             todayKey: today,
-            todayCostByAgent: await store.todayCostByAgent(),
-            todayCostByProject: await store.todayCostByProject(),
-            todayCostByModel: await store.todayCostByModel(),
+            todayCostByAgent: breakdown.byAgent,
+            todayCostByProject: breakdown.byProject,
+            todayCostByModel: breakdown.byModel,
             visibleSessionIDs: rows.map(\.id),
             anyWorking: anyWorking,
             secondsSinceLastTick: sinceCredit)
@@ -984,8 +991,9 @@ final class AppModel: ObservableObject {
         if ledger.sessionCounts != counts {
             defaults.set(ledger.sessionCounts, forKey: "sessionCounts")
         }
-        if Set(todaySeen[today] ?? []) != ledger.todaySessionIDs || todaySeen.count != 1 {
-            defaults.set([today: Array(ledger.todaySessionIDs)], forKey: "sessionsSeenToday")
+        if ledger.countedSessionIDs != countedIDs {
+            defaults.set(Array(ledger.countedSessionIDs), forKey: "countedSessionIDs")
+            defaults.removeObject(forKey: "sessionsSeenToday")   // superseded
         }
         if ledger.activeMinutes != activeMinutes {
             defaults.set(ledger.activeMinutes, forKey: "activeMinutes")
@@ -1042,12 +1050,13 @@ final class AppModel: ObservableObject {
     /// from the transcripts. Days whose transcripts are gone keep what's stored.
     private func recomputeStatsHistoryIfNeeded() {
         let defaults = UserDefaults.standard
-        // Bumped to 4: v3 corrected Codex dollars; v4 re-keys costByProject to
-        // the cwd basename (was the munged dir), which split each project into
-        // two rows in the stats window. Persisted totals are frozen, so force one
-        // rebuild from the transcripts to collapse the duplicates.
-        guard defaults.integer(forKey: "statsRecomputeVersion") < 4 else { return }
-        defaults.set(4, forKey: "statsRecomputeVersion")   // once per version, even if it throws
+        // Bumped over time as cost math changed: v3 fixed Codex cached
+        // double-counting, v4 re-keyed costByProject to the cwd basename, v5
+        // recovers Codex sub-agent usage whose model was declared after its
+        // token_count events (previously priced $0). Persisted totals are frozen,
+        // so force one rebuild from the transcripts.
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 5 else { return }
+        defaults.set(5, forKey: "statsRecomputeVersion")   // once per version, even if it throws
         let adapters = self.adapters
         Task.detached(priority: .utility) { [weak self] in
             let totals = StatsRecompute.run(adapters: adapters)

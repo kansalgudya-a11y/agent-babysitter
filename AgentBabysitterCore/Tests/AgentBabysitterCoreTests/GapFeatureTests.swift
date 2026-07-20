@@ -120,20 +120,40 @@ final class StatsLedgerMergeTests: XCTestCase {
             costByAgent: ["2026-07-06": ["claude-code": 10]],
             costByProject: ["2026-07-06": ["web": 6]],
             sessionCounts: ["2026-07-06": 3],
-            todaySessionIDs: ["a"], activeMinutes: ["2026-07-06": 30])
+            countedSessionIDs: ["a"], activeMinutes: ["2026-07-06": 30])
         let b = StatsLedger.Ledger(
             costByAgent: ["2026-07-06": ["claude-code": 8, "codex": 4],
                           "2026-07-05": ["codex": 2]],
             costByProject: ["2026-07-06": ["web": 9]],
             sessionCounts: ["2026-07-06": 5],
-            todaySessionIDs: ["b"], activeMinutes: ["2026-07-06": 20])
+            countedSessionIDs: ["b"], activeMinutes: ["2026-07-06": 20])
         let m = StatsLedger.merged(a, b)
         XCTAssertEqual(m.costByAgent["2026-07-06"], ["claude-code": 10, "codex": 4])
         XCTAssertEqual(m.costByAgent["2026-07-05"], ["codex": 2])
         XCTAssertEqual(m.costByProject["2026-07-06"], ["web": 9])   // max
         XCTAssertEqual(m.sessionCounts["2026-07-06"], 5)            // max
         XCTAssertEqual(m.activeMinutes["2026-07-06"], 30)           // max
-        XCTAssertEqual(m.todaySessionIDs, ["a", "b"])               // union
+        XCTAssertEqual(m.countedSessionIDs, ["a", "b"])               // union
+    }
+
+    /// A multi-day session must be counted once (on its first-seen day), so a
+    /// range sum of sessionCounts is a DISTINCT count, not sessions×days-alive.
+    func testSessionCountedOnceOnFirstSeenDay() {
+        var l = StatsLedger.Ledger()
+        l = StatsLedger.ticked(l, todayKey: "2026-07-06", todayCostByAgent: [:],
+                               visibleSessionIDs: ["a", "b"], anyWorking: false,
+                               secondsSinceLastTick: 0)
+        // Re-tick the same day: idempotent, no double count.
+        l = StatsLedger.ticked(l, todayKey: "2026-07-06", todayCostByAgent: [:],
+                               visibleSessionIDs: ["a", "b"], anyWorking: false,
+                               secondsSinceLastTick: 0)
+        // Next day: "a" is still alive but already counted; only "c" is new.
+        l = StatsLedger.ticked(l, todayKey: "2026-07-07", todayCostByAgent: [:],
+                               visibleSessionIDs: ["a", "c"], anyWorking: false,
+                               secondsSinceLastTick: 0)
+        XCTAssertEqual(l.sessionCounts["2026-07-06"], 2, "a, b first seen here")
+        XCTAssertEqual(l.sessionCounts["2026-07-07"], 1, "only c is new")
+        XCTAssertEqual(l.sessionCounts.values.reduce(0, +), 3, "distinct a,b,c — not 4")
     }
 }
 

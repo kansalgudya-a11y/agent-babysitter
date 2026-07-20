@@ -68,6 +68,11 @@ public struct CodexAdapter: AgentAdapter {
                 // state turns it into deltas (real rollouts show overlapping
                 // last_token_usage values that would over-count if summed).
                 let state = CodexRolloutParser.UsageState()
+                // The model lives on turn_context, which a sub-agent rollout can
+                // emit AFTER dozens of token_count events — those would price at
+                // $0. Seed the model from the file's first turn_context so early
+                // usage is priced too.
+                state.model = CodexRolloutParser.firstTurnContextModel(inFileAt: url)
                 return TranscriptTailParser(parseLine: {
                     CodexRolloutParser.parse($0, usageState: state)
                 })
@@ -153,6 +158,25 @@ enum CodexRolloutParser {
             return (step(newInput, &input), step(newCached, &cachedInput),
                     step(newOutput, &output))
         }
+    }
+
+    /// The model on the file's first `turn_context`, read cheaply from the head
+    /// of the file (turn_context is near the top). Used to seed the usage state
+    /// so token_count events that precede it are still priced. nil when no
+    /// turn_context appears within the scanned window.
+    static func firstTurnContextModel(inFileAt url: URL,
+                                      scanBytes: Int = 512 * 1024) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: scanBytes)) ?? Data()
+        for line in data.split(separator: 0x0A) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  obj["type"] as? String == "turn_context",
+                  let payload = obj["payload"] as? [String: Any],
+                  let model = payload["model"] as? String else { continue }
+            return model
+        }
+        return nil
     }
 
     static func parse(_ line: Data, usageState: UsageState?) -> LineParseResult {

@@ -244,6 +244,37 @@ final class CodexAdapterTests: XCTestCase {
         XCTAssertEqual(limits["codex"]?.usedPercent, 17.0)
         XCTAssertNil(limits["claude-code"], "agents without local limit data have no entry")
     }
+
+    // MARK: - Model recovered when token_count precedes turn_context
+
+    func testTokenCountBeforeTurnContextIsStillPriced() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-latemodel-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent(
+            "rollout-2026-06-20T00-00-00-019ee4fa-8a68-7360-8592-756f272cbfae.jsonl")
+        func tc(_ i: Int, _ o: Int) -> String {
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":\(i),\"cached_input_tokens\":0,\"output_tokens\":\(o),\"total_tokens\":\(i + o)}}}}"
+        }
+        // Sub-agent shape: cumulative token_count events, THEN turn_context.
+        let lines = [
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019ee4fa-8a68-7360-8592-756f272cbfae\",\"cwd\":\"/w\"}}",
+            tc(100, 10), tc(300, 25),
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.5\",\"cwd\":\"/w\"}}",
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: false, encoding: .utf8)
+
+        let reader = adapter.makeReader(url: url)
+        try reader.refresh()
+        XCTAssertFalse(reader.cost.hasUnknownPricing,
+                       "early usage priced via the first turn_context model, not $0")
+        XCTAssertEqual(reader.cost.inputTokens, 300)
+        XCTAssertEqual(reader.cost.outputTokens, 25)
+        // gpt-5.5: $5/M input, $30/M output.
+        let expected = Double(300) * 5.0 / 1_000_000 + Double(25) * 30.0 / 1_000_000
+        XCTAssertEqual(reader.cost.dollars, expected, accuracy: 1e-9)
+    }
 }
 
 extension CodexAdapterTests {

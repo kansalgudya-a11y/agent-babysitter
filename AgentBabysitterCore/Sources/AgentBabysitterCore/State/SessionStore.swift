@@ -381,6 +381,38 @@ public actor SessionStore {
         return totals
     }
 
+    public struct TodayBreakdown: Sendable {
+        public let byAgent: [String: Double]
+        public let byProject: [String: Double]
+        public let byModel: [String: Double]
+    }
+
+    /// All three of today's breakdowns from ONE consistent pass over the
+    /// sessions. Computing them as three separate actor calls let a session's
+    /// `dailyCosts` mutate between them, so the per-model total could disagree
+    /// with the per-agent total for the same tick.
+    public func todayBreakdown(at now: Date = Date(),
+                               timeZone: TimeZone = .current) -> TodayBreakdown {
+        let midnight = LocalDay.start(of: now, timeZone: timeZone)
+        var byAgent: [String: Double] = [:]
+        var byProject: [String: Double] = [:]
+        var byModel: [String: Double] = [:]
+        for (_, tracked) in sessions {
+            if let daily = tracked.reader.dailyCosts[midnight] {
+                byAgent[tracked.adapter.id, default: 0] += daily.dollars
+                if daily.dollars > 0 {
+                    let project = tracked.reader.lastKnownCWD
+                        .map { URL(fileURLWithPath: $0).lastPathComponent } ?? tracked.projectDirName
+                    byProject[project, default: 0] += daily.dollars
+                }
+            }
+            for (model, dollars) in tracked.reader.dailyDollarsByModel[midnight] ?? [:] {
+                byModel[model, default: 0] += dollars
+            }
+        }
+        return TodayBreakdown(byAgent: byAgent, byProject: byProject, byModel: byModel)
+    }
+
     /// Latest rate-limit reading per agent, newest capture wins. Codex writes
     /// a real percentage to disk; Antigravity contributes its plan name (from
     /// the IDE's stored state, no percentage exists locally); Claude Code has
