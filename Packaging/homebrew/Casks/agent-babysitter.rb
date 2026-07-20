@@ -2,8 +2,8 @@
 # jaylmaao/homebrew-tap repo; this is the source of truth, stamped by
 # Scripts/update-cask.sh at release time (version + sha256).
 cask "agent-babysitter" do
-  version "0.11.0"
-  sha256 "d5f4362873aef8571729b5990c4e4a4fc2ef87b7b7152544e42d47ddc5dc7cef"
+  version "0.11.1"
+  sha256 "75adb72a6eb96f5c93289efdf31068795dd9333fdeac1bde9654d3cf33d9accc"
 
   url "https://github.com/jaylmaao/agent-babysitter/releases/download/v#{version}/AgentBabysitter-#{version}.dmg"
   name "Agent Babysitter"
