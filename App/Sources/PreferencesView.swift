@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentBabysitterCore
+import UserNotifications
 
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
@@ -125,18 +126,18 @@ struct PreferencesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Picker("Show costs as", selection: $model.costsArePlanValue) {
-                    Text("Plan value").tag(true)
-                    Text("API cost").tag(false)
+                // A checkbox, not a two-option picker: this flips a wording
+                // label only — the number is identical either way. The old
+                // "Show costs as: Plan value / API cost" picker implied a
+                // different figure and lost trust when the total didn't move.
+                Toggle(isOn: $model.costsArePlanValue) {
+                    Text("Label costs as plan value")
+                    Text("Doesn't change any number — only the wording. On a subscription (Pro/Max/Plus) you aren't billed per token; \"plan value\" is what that usage would cost at API list prices.")
                 }
-                if model.costsArePlanValue {
-                    Text("Costs are the estimated value of your usage at API list prices. On a subscription (Pro/Max/Plus) you aren't billed per token — this is what that usage would cost on the API.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                .hapticTick(on: model.costsArePlanValue)
                 Toggle(isOn: $model.syncStatsViaICloud) {
                     Text("Sync stats across my Macs (iCloud Drive)")
-                    Text("Merges the stats totals from each of your Macs via a small file in iCloud Drive, so \"all time\" spans every machine. Only aggregate numbers — no session content — are stored.")
+                    Text("Merges the stats totals from each of your Macs via a small file in iCloud Drive, so \"all time\" spans every machine. It stores cost and session totals broken down by agent, model, and project — which includes the names of the projects you work in — but never any session content, prompts, or transcripts.")
                 }
                 .hapticTick(on: model.syncStatsViaICloud)
                 Button("Show the feature tour") {
@@ -152,8 +153,13 @@ struct PreferencesView: View {
     }
 
     static func hourLabel(_ hour: Int) -> String {
-        let base = hour % 12 == 0 ? 12 : hour % 12
-        return "\(base) \(hour < 12 ? "AM" : "PM")"
+        // Render the hour in the system's own hour cycle instead of a hardcoded
+        // 12-hour AM/PM: Date.FormatStyle.hour() follows the locale, so a 24-hour
+        // region shows "09" and a 12-hour region shows "9 AM".
+        let cal = Calendar.current
+        let base = cal.startOfDay(for: Date())
+        let date = cal.date(bySettingHour: hour, minute: 0, second: 0, of: base) ?? base
+        return date.formatted(.dateTime.hour())
     }
 
     @ViewBuilder private var notificationsTab: some View {
@@ -265,7 +271,12 @@ struct PreferencesView: View {
                 }
                 .hapticTick(on: model.weeklyDigestEnabled)
                 LabeledContent {
-                    BudgetField(symbol: model.currency.symbol, initial: model.dailyBudget) {
+                    // displayCurrency + effectiveRate are the exact pair the
+                // compare-time conversion divides by (AppModel.deliverBudgetAlerts),
+                // so the symbol shown here never disagrees with the divisor —
+                // unlike `currency`, which can name a currency whose rate hasn't
+                // landed yet. See Contract 3.
+                BudgetField(symbol: model.displayCurrency.symbol, initial: model.dailyBudget) {
                         model.dailyBudget = $0
                     }
                 } label: {
@@ -273,7 +284,7 @@ struct PreferencesView: View {
                     Text("One heads-up per day when today's estimated cost crosses this. Leave empty to turn off.")
                 }
                 LabeledContent {
-                    BudgetField(symbol: model.currency.symbol, initial: model.weeklyBudget) {
+                    BudgetField(symbol: model.displayCurrency.symbol, initial: model.weeklyBudget) {
                         model.weeklyBudget = $0
                     }
                 } label: {
@@ -335,7 +346,7 @@ struct PreferencesView: View {
                 .hapticTick(on: model.claudeUsageMeterEnabled)
                 Toggle(isOn: $model.liveUsageEnabled) {
                     Text("Live usage % (connects to the internet)")
-                    Text("Off by default, everything else stays fully offline. When on, the app uses your existing logins to fetch real usage: Claude via a tiny 1-token request to api.anthropic.com (5-hour + weekly %), Cursor's included-usage % from cursor.com, and your Manus credit balance from api.manus.im. Each read-only, each only its own vendor. Codex and Antigravity already show real usage with no network.")
+                    Text("Off by default, everything else stays fully offline. When on, the app uses your existing logins to fetch real usage, repeating about once every 5 minutes for as long as this stays on: Claude via a tiny 1-token request to api.anthropic.com (5-hour + weekly %), Cursor's included-usage % from cursor.com, and your Manus credit balance from api.manus.im. Each read-only, each only its own vendor. Codex and Antigravity already show real usage with no network.")
                 }
                 .hapticTick(on: model.liveUsageEnabled)
                 if model.liveUsageEnabled, let status = model.liveUsageStatus {
@@ -351,7 +362,7 @@ struct PreferencesView: View {
             } header: {
                 Text("Advanced")
             } footer: {
-                Text("Everything runs on your Mac. Agent Babysitter makes no network connections and collects nothing.")
+                Text("Your transcripts and prompts never leave your Mac, and nothing about your usage is collected or uploaded. The app reaches the network only for these, each on its own trigger: currency rates from open.er-api.com while your display currency isn't USD; a daily update check to github.com (toggle it in License & Updates); Live usage above only when you turn it on (api.anthropic.com, cursor.com, api.manus.im); and licence activation to api.lemonsqueezy.com only when you press Activate. Everything else runs entirely on your Mac.")
             }
 
     }
@@ -432,17 +443,39 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                 }
                 Button("Copy diagnostics") {
-                    let defaults = UserDefaults.standard
-                    let report = """
-                    Agent Babysitter \(updates.currentVersion)
-                    limits: \(defaults.string(forKey: "debugUsageLimits") ?? defaults.dictionary(forKey: "debugUsageLimits").map(String.init(describing:)) ?? "-")
-                    agents: \(defaults.string(forKey: "debugAgents") ?? "-")
-                    toggles: precision=\(model.precisionModeEnabled) meter=\(model.claudeUsageMeterEnabled) live=\(model.liveUsageEnabled) alerts=\(model.notifyLimit)@\(Int(model.limitAlertThreshold))% pace=\(model.notifyPace)
-                    """
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(report, forType: .string)
+                    // Async so we can read the live OS notification-authorization
+                    // status: "I get no notifications" is the most common ticket,
+                    // and .denied / quiet-hours / mute are exactly what the old
+                    // dump omitted. No file contents or keys are included.
+                    Task { @MainActor in
+                        let settings = await UNUserNotificationCenter.current().notificationSettings()
+                        let auth: String
+                        switch settings.authorizationStatus {
+                        case .authorized: auth = "authorized"
+                        case .denied: auth = "denied — macOS silently drops every banner"
+                        case .notDetermined: auth = "not yet requested"
+                        case .provisional: auth = "provisional (quiet delivery)"
+                        case .ephemeral: auth = "ephemeral"
+                        @unknown default: auth = "unknown"
+                        }
+                        let defaults = UserDefaults.standard
+                        let quiet = model.quietHoursEnabled
+                            ? "on \(model.quietStartHour)–\(model.quietEndHour)" : "off"
+                        let report = """
+                        Agent Babysitter \(updates.currentVersion)
+                        notifications: system=\(auth) muted=\(model.notificationsMuted) quietHours=\(quiet)
+                        limits: \(defaults.string(forKey: "debugUsageLimits") ?? defaults.dictionary(forKey: "debugUsageLimits").map(String.init(describing:)) ?? "-")
+                        agents: \(defaults.string(forKey: "debugAgents") ?? "-")
+                        accuracy: precision=\(model.precisionModeEnabled) meter=\(model.claudeUsageMeterEnabled) live=\(model.liveUsageEnabled)
+                        alerts: waiting=\(model.notifyWaiting) reminder=\(model.waitingReminderEnabled) done=\(model.notifyDone) stalled=\(model.notifyStalled) spendGuard=\(model.spendGuardEnabled) limit=\(model.notifyLimit)@\(Int(model.limitAlertThreshold))% pace=\(model.notifyPace) digest=\(model.weeklyDigestEnabled)
+                        budgets: daily=\(model.dailyBudget) weekly=\(model.weeklyBudget) currency=\(model.currencyCode)
+                        general: launchAtLogin=\(model.launchAtLogin) hideDoneMin=\(model.doneAutoHideMinutes) iCloudSync=\(model.syncStatsViaICloud)
+                        """
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(report, forType: .string)
+                    }
                 }
-                .help("Copies version, current readings, and toggle states — paste into a bug report. Contains no file contents or keys.")
+                .help("Copies version, current readings, notification permission, and toggle states — paste into a bug report. Contains no file contents or keys.")
             }
     }
 }

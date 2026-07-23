@@ -3,9 +3,12 @@ import SQLite3
 
 /// Hermes Agent (Nous Research). Every session — TUI and gateway — is a row in
 /// one SQLite store at `~/.hermes/state.db` (WAL mode, verified on a real
-/// install 2026-07). `sessions` carries the token/cost aggregates Hermes
-/// prices for itself; `messages` carries the per-turn transcript this adapter
-/// reads a real `TurnPhase` out of.
+/// install 2026-07). `sessions` carries the token/cost aggregates: Hermes
+/// prices most sessions itself (actual/estimated cost + `cost_status`), and
+/// when it routes to a vendor it can't price it records `cost_status="unknown"`
+/// — we then surface the tokens as pricing-unknown rather than a false $0.
+/// `messages` carries the per-turn transcript this adapter reads a real
+/// `TurnPhase` out of.
 public struct HermesAdapter: AgentAdapter {
 
     public let id = "hermes"
@@ -50,9 +53,36 @@ public struct HermesAdapter: AgentAdapter {
 
     // MARK: - Session discovery
 
+    /// One discovered session before the freshness filter — the unit the parse
+    /// cache stores. Pure db content, so it is safe to memoize by mtime.
+    struct SessionRecord: Sendable {
+        let sessionID: String
+        let projectDirName: String
+        let lastModified: Date
+    }
+
     public func recentTranscripts(maxAge: TimeInterval, now: Date) -> [SessionFileInfo] {
-        let stateDBURL = self.stateDBURL
-        let rows = Self.withCopiedDB(at: stateDBURL) { db -> [SessionFileInfo] in
+        let url = stateDBURL
+        // Memoize the parse by state.db's mtime (base + WAL). SessionStore
+        // re-discovers Hermes sessions on EVERY change to the one shared store
+        // (transcriptsChanged's multiSessionFiles branch), and FSEvents fires
+        // that path for -wal/-shm churn too, so a single live session would
+        // otherwise re-copy the ~47 MB db many times a second just to re-read
+        // the same handful of rows. The freshness filter stays OUTSIDE the cache
+        // so an advancing `now` still ages sessions out — the same shape
+        // CursorAdapter's ComposerCache uses for its shared state.vscdb.
+        return HermesSessionCache.shared.records(forDBAt: url) {
+            Self.parseSessions(inStateDBAt: url)
+        }
+        .filter { now.timeIntervalSince($0.lastModified) <= maxAge }
+        .map { SessionFileInfo(sessionID: $0.sessionID, projectDirName: $0.projectDirName,
+                               lastModified: $0.lastModified, url: url) }
+    }
+
+    /// All non-archived sessions in the store, no freshness filter (the caller
+    /// applies that per call). A pure function of db content — hence cacheable.
+    private static func parseSessions(inStateDBAt url: URL) -> [SessionRecord] {
+        let rows = withCopiedDB(at: url) { db -> [SessionRecord] in
             var stmt: OpaquePointer?
             // Skip archived rows (archived truthy). last_ts = newest message for
             // the session, so a session's freshness tracks its transcript, not
@@ -65,17 +95,16 @@ public struct HermesAdapter: AgentAdapter {
             """
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
-            var found: [SessionFileInfo] = []
+            var found: [SessionRecord] = []
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let idC = sqlite3_column_text(stmt, 0) else { continue }
                 let id = String(cString: idC)
-                let cwd = Self.columnText(stmt, 1)
-                let repo = Self.columnText(stmt, 2)
+                let cwd = columnText(stmt, 1)
+                let repo = columnText(stmt, 2)
                 let startedAt = sqlite3_column_double(stmt, 3)
                 let lastTs = sqlite3_column_type(stmt, 4) == SQLITE_NULL
                     ? startedAt : sqlite3_column_double(stmt, 4)
                 let modified = Date(timeIntervalSince1970: lastTs)
-                guard now.timeIntervalSince(modified) <= maxAge else { continue }
                 // Project label: cwd folder, else repo folder, else the agent id.
                 let project: String
                 if let cwd, !cwd.isEmpty {
@@ -85,8 +114,8 @@ public struct HermesAdapter: AgentAdapter {
                 } else {
                     project = "hermes"
                 }
-                found.append(SessionFileInfo(sessionID: id, projectDirName: project,
-                                             lastModified: modified, url: stateDBURL))
+                found.append(SessionRecord(sessionID: id, projectDirName: project,
+                                           lastModified: modified))
             }
             return found
         }
@@ -217,8 +246,9 @@ public struct HermesAdapter: AgentAdapter {
 
 /// Reads one Hermes session out of the shared state.db per refresh. Every fact
 /// derives from real rows: the turn phase from the last message, the cost from
-/// the session's own aggregates (Hermes prices itself — we never touch our
-/// PriceTable for it).
+/// the session's own aggregates when Hermes priced it (we never touch our
+/// PriceTable for it) and a pricing-unknown flag when its `cost_status` says it
+/// could not.
 public final class HermesSessionReader: SessionReading {
 
     public let url: URL
@@ -364,6 +394,14 @@ public final class HermesSessionReader: SessionReading {
         let startedAt = Date(timeIntervalSince1970: sqlite3_column_double(sessionStmt, 11))
         sqlite3_finalize(sessionStmt)
 
+        // Hermes' own verdict on whether it could price this session. Read in a
+        // SEPARATE statement (not added to the sessionSQL above) so its prepare
+        // can fail harmlessly — an older store, or a test fixture, whose
+        // `sessions` table predates the `cost_status` column just yields nil
+        // (and the estimate is trusted, exactly as before) instead of failing
+        // the entire read and leaving the session unreadable.
+        let costStatus = Self.costStatus(db, sessionID: sessionID)
+
         snapshot.lastKnownCWD = (cwd?.isEmpty == false) ? cwd : nil
 
         // --- messages: ordered oldest → newest for phase + growth ---
@@ -440,14 +478,30 @@ public final class HermesSessionReader: SessionReading {
         let totalTokens = inputTokens + outputTokens + cacheWriteTokens
         var unknownModels: Set<String> = []
         let dollars: Double
+        // `cost_status = "unknown"` is Hermes' explicit "I could NOT price this".
+        // Verified on a real install (2026-07): grok-4.5 routed via xai-oauth
+        // stores cost_status="unknown", cost_source="none", actual_cost_usd=NULL
+        // and estimated_cost_usd=0.0 — that 0.0 is a PLACEHOLDER, not a free
+        // price. The old code trusted it and printed a confident "$0.00" over
+        // ~1.6M input + ~14M cache-read tokens. A DeepSeek session on the same
+        // install carried cost_status="estimated" with estimated_cost_usd=0.10,
+        // a genuine Hermes price we DO surface.
         if let actualCost {
+            // Hermes billed this exactly — authoritative regardless of status.
             dollars = actualCost
-        } else if let estimatedCost {
-            // A real 0.0 from a :free model is a KNOWN price, not unknown.
+        } else if let estimatedCost, costStatus != "unknown" {
+            // Hermes priced it itself (status "estimated"/etc, or a real 0.0
+            // from a priced/:free model). A genuine known price.
             dollars = estimatedCost
         } else {
-            // Both NULL ⇒ Hermes never priced it: 0 dollars, and flag the model
-            // so the UI shows "≥" (cost floor) rather than "~" (estimate).
+            // cost_status "unknown" (Hermes routed to a vendor it cannot price —
+            // xAI/DeepSeek/… via *-oauth) or no cost recorded at all. Never
+            // claim "$0.00" over real tokens: keep dollars 0 but flag the model
+            // so the UI shows "≥" (cost floor / pricing unknown) rather than
+            // "~" (estimate) — the tokens carry the honesty, not a fabricated
+            // dollar. Deliberately NOT priced through our PriceTable: it ships
+            // no xAI/DeepSeek models, so a fallback would either miss (same
+            // result) or invent a number the app cannot stand behind.
             dollars = 0
             unknownModels.insert(model?.isEmpty == false ? model! : "unknown")
         }
@@ -515,6 +569,20 @@ public final class HermesSessionReader: SessionReading {
         return snapshot
     }
 
+    /// Hermes' `sessions.cost_status` for one session, or nil when the column is
+    /// absent (older store / test fixture) or NULL. Its own statement so the
+    /// prepare can fail without failing the whole read (see the call site).
+    private static func costStatus(_ db: OpaquePointer, sessionID: String) -> String? {
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, "SELECT cost_status FROM sessions WHERE id = ?",
+                                 -1, &stmt, nil) == SQLITE_OK else { return nil }
+        sqlite3_bind_text(stmt, 1, sessionID, -1,
+                          unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return HermesAdapter.columnText(stmt, 0)
+    }
+
     /// First non-empty line, whitespace-trimmed, capped for a caption.
     private static func oneLine(_ text: String, limit: Int = 80) -> String? {
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
@@ -542,5 +610,53 @@ private struct DiskSignature: Equatable {
         }
         (dbMtime, dbSize) = stat(dbPath)
         (walMtime, walSize) = stat(dbPath + "-wal")
+    }
+}
+
+/// Memoizes the non-archived session-row parse by state.db's mtime (base +
+/// WAL). SessionStore re-discovers Hermes sessions on EVERY change to the one
+/// shared state.db, and FSEvents fires that path for -wal/-shm churn as well,
+/// so without this a single live session re-copies the ~47 MB db many times a
+/// second to re-read the same handful of rows — the copy-storm CursorAdapter's
+/// ComposerCache already avoids. Thread-safe via its own lock; the store calls
+/// in on its actor but the class itself makes no isolation promise.
+private final class HermesSessionCache: @unchecked Sendable {
+    static let shared = HermesSessionCache()
+    private let lock = NSLock()
+    private var cachedPath: String?
+    private var cachedMtime: Date?
+    private var cached: [HermesAdapter.SessionRecord] = []
+
+    func records(forDBAt url: URL,
+                 parse: () -> [HermesAdapter.SessionRecord]) -> [HermesAdapter.SessionRecord] {
+        let mtime = Self.combinedMtime(url)
+        lock.lock()
+        if cachedPath == url.path, cachedMtime == mtime {
+            defer { lock.unlock() }
+            return cached
+        }
+        lock.unlock()
+        // Parse outside the lock (it copies a file); a redundant parse under a
+        // rare race is harmless and still far cheaper than N copies.
+        let parsed = parse()
+        lock.lock()
+        cachedPath = url.path
+        cachedMtime = mtime
+        cached = parsed
+        lock.unlock()
+        return parsed
+    }
+
+    /// Newest of the db and its WAL sibling — the WAL is where Hermes' live
+    /// writes land before checkpoint.
+    private static func combinedMtime(_ url: URL) -> Date {
+        let fm = FileManager.default
+        var newest = Date.distantPast
+        for path in [url.path, url.path + "-wal"] {
+            if let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date {
+                newest = max(newest, m)
+            }
+        }
+        return newest
     }
 }

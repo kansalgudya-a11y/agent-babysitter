@@ -1,8 +1,15 @@
 # Agent Babysitter
 
 macOS menu bar app that monitors running coding-agent sessions (Claude Code, Codex, Antigravity, Gemini, Cursor, and Manus): working /
-waiting for you / done / stalled / ended — with native notifications and live
-per-session token cost. No network calls, no telemetry.
+waiting for you / done / stalled / ended — with native notifications and, where
+the agent exposes token counts, live per-session cost.
+
+**Your transcripts and prompts never leave your Mac.** All session parsing,
+state, and cost run locally against files already on disk, and the app sends no
+analytics or telemetry about you to anyone. A few clearly labeled features do
+reach the network — the daily update check, exchange rates when you pick a
+non-USD currency, opt-in Live usage, and license activation — each named in the
+[Network](#network) table below.
 
 ## What it looks like
 
@@ -20,10 +27,47 @@ per-session token cost. No network calls, no telemetry.
 
 Download, open, done. The app finds every installed agent by itself —
 Claude Code, Codex, Antigravity, Gemini, Cursor, and Manus, desktop apps and CLIs alike —
-and populates sessions, costs, and limits from their own files with no
-configuration, no accounts, and no network. Optional extras are one clearly
-labeled toggle each; nothing changes without that click, and every change
-is fully reversible.
+and reads their own on-disk files to show sessions, states, and — where the
+agent exposes token counts — cost and limits, with no configuration and no
+accounts. The optional network features are one clearly labeled toggle each and
+are listed under [Network](#network) below; nothing changes without that click,
+and every change is fully reversible.
+
+## What each agent reports
+
+Not every agent exposes the same data on disk, and the app never invents what it
+can't read:
+
+- **Per-session token cost is exact for Claude Code and Codex.** Their
+  transcripts carry token counts, so cost is recomputed locally (deduped by API
+  message id). The activity-based agents — Antigravity, Gemini, Cursor, Manus —
+  publish no per-turn token counts, so their rows show state (and usage %, where
+  available) but a plain "—" for cost, never a guessed number.
+- **"Needs you" / "finished" notifications need agents that mark turn
+  boundaries** (Claude Code and Codex). Activity-based agents get working /
+  done / ended plus usage- and limit-based alerts, but their turn-level waiting/
+  finished banners are suppressed rather than faked.
+- **Usage limits** are read for the agents that expose them (see Known
+  limitations for the per-agent detail).
+
+## Network
+
+Everything above runs offline. These are the only outbound calls the app makes,
+what each is for, and whether it is on by default:
+
+| Host | Used for | When | Default |
+|---|---|---|---|
+| `api.github.com` | Update check (latest release) | Automatic, ~every 6h while running | **On** — toggle in Preferences → Advanced |
+| `open.er-api.com` | USD→currency exchange rates (public rates only, no user data) | Only while your display currency is not USD | **Off** — USD default makes no request; picking a non-USD currency turns it on |
+| `api.anthropic.com` | Live usage % for Claude Code | Only with "Live usage" enabled | **Off** |
+| `cursor.com` | Live usage % for Cursor | Only with "Live usage" enabled | **Off** |
+| `api.manus.im` | Live usage % for Manus | Only with "Live usage" enabled | **Off** |
+| `api.lemonsqueezy.com` | License activation & validation (only if you buy a license) | When you activate a license, plus periodic re-validation | On once activated |
+
+None of these carry your transcripts, prompts, or file contents. The GitHub and
+currency calls send no user data at all (just your IP and timing); Live usage
+authenticates with your own existing agent login; license validation sends only
+your license key.
 
 ## Layout
 
@@ -101,9 +145,10 @@ disabling removes only our entries.
   network whenever a terminal session runs (the window is account-wide, so it
   reflects desktop usage too); your own status line keeps working and turning
   it off restores everything. A separate opt-in "Live usage" toggle (also OFF
-  by default) instead fetches the % from api.anthropic.com with your existing
-  login — terminal or desktop — the only feature that ever makes a network
-  call.
+  by default) instead fetches the % over the network (api.anthropic.com for
+  Claude Code, plus cursor.com and api.manus.im for those agents) using your
+  existing login — terminal or desktop. See the [Network](#network) table for
+  the full list of hosts the app can contact and their defaults.
 - **Costs are estimates at API list prices** — on subscription plans this is
   API-equivalent value, not spend. Sonnet 5 uses sticker pricing (intro rate
   runs through 2026-08-31).
@@ -112,8 +157,9 @@ disabling removes only our entries.
   Security → "Open Anyway". Instructions ship inside the DMG. The build
   script auto-upgrades to signed + notarized the moment a "Developer ID
   Application" identity exists in the keychain.
-- **No auto-update yet** (Sparkle planned once signing lands); no global
-  hotkey (SwiftUI provides no API to open a MenuBarExtra programmatically).
+- **No auto-update yet** (Sparkle planned once signing lands). The app does
+  check `api.github.com` daily for a newer release and tells you in the menu;
+  installing it is manual.
 
 ## Status
 

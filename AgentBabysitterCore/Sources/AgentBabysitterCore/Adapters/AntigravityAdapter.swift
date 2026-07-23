@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// Google Antigravity (desktop app, IDE, and `agy` CLI). Conversations live
 /// at `~/.gemini/<surface>/conversations/<uuid>.db` — SQLite with protobuf
@@ -119,9 +120,68 @@ public struct AntigravityAdapter: AgentAdapter {
     }
 
     public func projectDirName(forTranscript url: URL) -> String {
-        // No readable cwd — a short conversation id keeps multiple rows
-        // distinguishable (the agent badge already names the surface).
-        "#\(sessionID(forTranscript: url).prefix(8))"
+        let id = sessionID(forTranscript: url)
+        // Prefer the readable title Antigravity itself recorded for the
+        // conversation; the hex stub is only the last resort (a brand-new
+        // conversation has no summary yet). The agent badge already names the
+        // surface, and there is no readable cwd to fall back on.
+        if let label = conversationLabel(forSessionID: id) { return label }
+        return "#\(id.prefix(8))"
+    }
+
+    /// Root of the shared `~/.gemini` tree, recovered from `transcriptRoot`
+    /// (which `init` builds as `<geminiRoot>/<surface>/conversations`).
+    private var geminiRoot: URL {
+        transcriptRoot.deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// A human-readable label for a conversation UUID, read from Antigravity's
+    /// own summary store at `<geminiRoot>/antigravity-cli/conversation_summaries.db`.
+    /// Verified against a live install: that one SQLite table carries a row per
+    /// conversation for BOTH the desktop and CLI surfaces (its `app_data_dir`
+    /// column is "antigravity" or "antigravity-cli"), each with a `title`
+    /// (usually empty) and a model-written `preview` (e.g. "Skipping Permissions
+    /// Security Flag"). We prefer `title`, then `preview`.
+    ///
+    /// Best-effort: any failure — store absent (the CLI was never installed),
+    /// no row yet (a live conversation before Antigravity has summarized it), or
+    /// a read error — returns nil and the caller keeps the "#<hex>" stub.
+    /// IDE-surface conversations are not in this store (their titles live only
+    /// in the shared `state.vscdb` protobuf) and also fall back to the stub.
+    func conversationLabel(forSessionID id: String) -> String? {
+        Self.summaryLabel(
+            summariesDB: geminiRoot
+                .appendingPathComponent("antigravity-cli")
+                .appendingPathComponent("conversation_summaries.db"),
+            conversationID: id)
+    }
+
+    /// Extraction core (injected DB path so tests/probes can point it at a
+    /// fixture). Opens the store read-only — never creating or writing it.
+    static func summaryLabel(summariesDB db: URL, conversationID id: String) -> String? {
+        guard FileManager.default.fileExists(atPath: db.path) else { return nil }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(db.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(handle); return nil
+        }
+        defer { sqlite3_close(handle) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            handle,
+            "SELECT title, preview FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+            -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        // SQLITE_TRANSIENT — SQLite copies the id; mirrors AntigravityStateReader.
+        sqlite3_bind_text(stmt, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        func column(_ i: Int32) -> String {
+            sqlite3_column_text(stmt, i).map { String(cString: $0) } ?? ""
+        }
+        for label in [column(0), column(1)] {
+            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     public var isActivityBased: Bool { true }

@@ -26,7 +26,10 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true
-        NSHumanReadableCopyright: ""
+        # PLACEHOLDER: replace "Agent Babysitter" with the legal owner
+        # (your name or registered company) before a paid release. Shown in
+        # Finder's Get Info panel and the About box.
+        NSHumanReadableCopyright: "Copyright © 2026 Agent Babysitter. All rights reserved."
     dependencies:
       - package: AgentBabysitterCore
     settings:
@@ -44,3 +47,12 @@ targets:
         Release:
           ARCHS: arm64 x86_64                 # universal for distribution
           ONLY_ACTIVE_ARCH: NO
+          # Xcode injects com.apple.security.get-task-allow into ad-hoc/dev
+          # signed builds so a debugger can attach. Shipping it in Release is
+          # both a security hole (any local process can task_for_pid the app
+          # and read the OAuth tokens it holds in memory) and an automatic
+          # notarization rejection. Suppressing base-entitlement injection
+          # here drops get-task-allow from the Release binary; the app has no
+          # entitlements file, so no other entitlements are affected. Verify
+          # after building with: codesign -d --entitlements - <app>
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

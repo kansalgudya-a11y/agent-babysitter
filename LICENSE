@@ -1,0 +1,139 @@
+Agent Babysitter — Software License Agreement
+Copyright (c) 2026 <YOUR_LEGAL_NAME>. All rights reserved.
+
+============================================================================
+DRAFT — NOT YET IN EFFECT
+This is a starting template. Replace every <PLACEHOLDER> and have a lawyer
+review it before you distribute or sell the software. It is not legal advice.
+============================================================================
+
+This is a proprietary, all-rights-reserved license for the "Agent Babysitter"
+application ("the Software"). The Software is licensed, not sold. This is NOT
+open-source software. No right to use the Software is granted except under the
+terms below.
+
+
+1. DEFINITIONS
+   "Licensor" means <YOUR_LEGAL_NAME>.
+   "You" means the individual or entity that obtained a license to the Software.
+   "Software" means the Agent Babysitter application, its executable code, and
+   any updates, patches, or accompanying materials Licensor provides, EXCLUDING
+   any third-party components that carry their own license terms (see Section 8).
+
+
+2. GRANT OF LICENSE
+   Subject to Your compliance with this Agreement and payment of any applicable
+   fees, Licensor grants You a limited, non-exclusive, non-transferable,
+   non-sublicensable, revocable license to install and use the Software for Your
+   own personal or internal business purposes, on the number of devices and for
+   the term specified in the purchase or subscription terms under which You
+   obtained it.
+
+
+3. RESTRICTIONS
+   Except to the extent this restriction is prohibited by applicable law, You
+   shall NOT, and shall not permit any third party to:
+   (a) copy, distribute, resell, rent, lease, lend, sublicense, or otherwise
+       make the Software available to any third party;
+   (b) reverse engineer, decompile, or disassemble the Software, or attempt to
+       derive its source code, except where such activity is expressly permitted
+       by applicable law notwithstanding this restriction;
+   (c) modify, adapt, translate, or create derivative works of the Software;
+   (d) remove, alter, or obscure any proprietary notices (including copyright
+       or trademark notices) on or in the Software;
+   (e) circumvent, disable, or tamper with any license-key, activation, or
+       usage-limitation mechanism in the Software; or
+   (f) use the Software in violation of any applicable law or regulation.
+
+
+4. OWNERSHIP
+   The Software is licensed, not sold. Licensor and its licensors retain all
+   right, title, and interest in and to the Software, including all intellectual
+   property rights. No rights are granted to You other than as expressly set
+   forth in this Agreement. "Agent Babysitter" and any associated logos are
+   trademarks of Licensor; this Agreement grants no right to use them except as
+   required to run the Software as delivered.
+
+
+5. LICENSE ACTIVATION
+   The Software may require a license key that is validated online at
+   activation (see the Privacy Policy for the host contacted and when). You are
+   responsible for keeping Your license key confidential. Licensor may deactivate
+   keys that are shared, resold, or used in breach of this Agreement.
+
+
+6. UPDATES
+   Licensor may, but is not obligated to, provide updates, upgrades, or bug
+   fixes. Any such update is part of the Software and governed by this Agreement
+   unless it is accompanied by a separate license. The Software's update-check
+   feature is described in the Privacy Policy and can be turned off.
+
+
+7. PRIVACY
+   Your use of the Software is also governed by the Privacy Policy (PRIVACY.md),
+   which describes exactly what the Software reads, stores, and — only for the
+   clearly labeled opt-in features — sends over the network. The Privacy Policy
+   is incorporated into this Agreement by reference.
+
+
+8. THIRD-PARTY COMPONENTS
+   As of this version, the Software depends only on operating-system frameworks
+   provided by Apple and on Licensor's own first-party code; it bundles no
+   third-party open-source libraries. If a future version includes third-party
+   components, their licenses and notices will be listed in a THIRD-PARTY-NOTICES
+   file accompanying the Software, and those components remain governed by their
+   own terms. <CONFIRM_BEFORE_RELEASE: re-verify this statement matches the
+   shipped build's dependencies.>
+
+
+9. TERM AND TERMINATION
+   This Agreement is effective until terminated. It terminates automatically if
+   You breach any of its terms. Licensor may also terminate it if You fail to
+   pay applicable fees. On termination You must stop using the Software and
+   delete all copies in Your possession or control. Sections 3, 4, 10, 11, 12,
+   and 13 survive termination.
+
+
+10. DISCLAIMER OF WARRANTY
+    TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED
+    "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, WHETHER EXPRESS,
+    IMPLIED, OR STATUTORY, INCLUDING WITHOUT LIMITATION THE IMPLIED WARRANTIES
+    OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND
+    NON-INFRINGEMENT. LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE
+    UNINTERRUPTED, ERROR-FREE, OR THAT ITS COST, TOKEN, OR USAGE-LIMIT FIGURES
+    ARE ACCURATE — THOSE ARE ESTIMATES DERIVED FROM LOCAL FILES AND MUST NOT BE
+    RELIED ON AS BILLING RECORDS. Some jurisdictions do not allow the exclusion
+    of implied warranties, so parts of this section may not apply to You.
+
+
+11. LIMITATION OF LIABILITY
+    TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL LICENSOR
+    BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE
+    DAMAGES, OR FOR ANY LOSS OF PROFITS, DATA, OR GOODWILL, ARISING OUT OF OR
+    RELATED TO THE SOFTWARE OR THIS AGREEMENT, EVEN IF ADVISED OF THE POSSIBILITY
+    OF SUCH DAMAGES. LICENSOR'S TOTAL AGGREGATE LIABILITY UNDER THIS AGREEMENT
+    WILL NOT EXCEED THE AMOUNT YOU ACTUALLY PAID FOR THE SOFTWARE IN THE TWELVE
+    (12) MONTHS PRECEDING THE EVENT GIVING RISE TO THE CLAIM. Some jurisdictions
+    do not allow certain limitations, so parts of this section may not apply.
+
+
+12. GOVERNING LAW
+    This Agreement is governed by the laws of <YOUR_JURISDICTION>, without regard
+    to its conflict-of-laws rules. The parties consent to the exclusive
+    jurisdiction of the courts located in <YOUR_JURISDICTION> for any dispute
+    arising under this Agreement, subject to any mandatory consumer-protection
+    rights You have where You reside.
+
+
+13. GENERAL
+    This Agreement, together with the Privacy Policy and the Terms of Sale
+    (TERMS.md), is the entire agreement between You and Licensor regarding the
+    Software and supersedes any prior agreement on that subject. If any provision
+    is held unenforceable, the remaining provisions stay in effect. Licensor's
+    failure to enforce a provision is not a waiver of it. You may not assign this
+    Agreement without Licensor's prior written consent.
+
+
+CONTACT
+    <YOUR_LEGAL_NAME>
+    <YOUR_SUPPORT_EMAIL>

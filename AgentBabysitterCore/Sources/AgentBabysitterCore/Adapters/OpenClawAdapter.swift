@@ -38,9 +38,14 @@ public struct OpenClawAdapter: AgentAdapter {
     public var displayName: String { surface.displayName }
     // No macOS app bundle ships with the npm package.
     public let focusBundleIdentifiers: [String] = []
-    // Only the gateway is a CLI install; the SDK surface is a derived view of
-    // Claude-format transcripts, not a separately installed binary.
-    public var cliExecutableNames: [String] { surface == .gateway ? ["openclaw"] : [] }
+    // Both surfaces share OpenClaw's single binary (`openclaw`) as their install
+    // signal. The SDK surface ships no binary of its own — it is a derived view
+    // of the Claude-format transcripts OpenClaw writes when it drives an agent
+    // through the Claude Agent SDK, and those only exist when `openclaw` is
+    // installed. Reporting [] for it (the old behavior) left openclaw-sdk with
+    // no bundle AND no executable name, so AgentInstallation could never mark it
+    // installed: the surface was registered, tested, and structurally invisible.
+    public var cliExecutableNames: [String] { ["openclaw"] }
     // The gateway store is opaque to parsing (see parseLine); the SDK store is
     // real Claude Code JSONL and IS parsed.
     public var isActivityBased: Bool { surface == .gateway }

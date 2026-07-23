@@ -178,8 +178,18 @@ public actor SessionStore {
             for info in adapter.recentTranscripts(maxAge: configuration.activeWindow,
                                                   now: Date()) {
                 guard let url = info.url else { continue }
-                track(url: url, adapter: adapter, projectDirName: info.projectDirName,
-                      sessionID: info.sessionID)
+                // Parse each transcript inside its own autorelease pool. The
+                // first refresh of a large file bridges autoreleased JSON
+                // objects (NSString/NSDictionary out of JSONSerialization) that
+                // would otherwise accumulate until this whole scan returns —
+                // the driver of the launch/rescan memory peak. Draining per file
+                // caps the peak at roughly one file's worth. (Deeper streaming
+                // reads live in the reader, not here — see report.)
+                autoreleasepool {
+                    track(url: url, adapter: adapter,
+                          projectDirName: info.projectDirName,
+                          sessionID: info.sessionID)
+                }
             }
         }
     }
@@ -257,11 +267,21 @@ public actor SessionStore {
         // visible rows account for it. The day total is unaffected — it already
         // sums every session directly.
         var sidechainCostByParent: [String: SessionCost] = [:]
+        // A parent that is only delegating writes nothing to its OWN transcript
+        // while its sub-agents run, so on its own liveness it would slide to
+        // Stalled/Ended. Fold the newest sidechain growth into the parent's
+        // liveness (used at `effectiveGrowth` below) so a delegating session
+        // stays Working while its children are actively writing.
+        var sidechainGrowthByParent: [String: Date] = [:]
         for (_, tracked) in sessions where tracked.reader.isSidechain {
             guard let parentID = Self.parentSessionID(forSidechain: tracked.reader.url)
             else { continue }
             let parentKey = "\(tracked.adapter.id)/\(parentID)"
             sidechainCostByParent[parentKey, default: SessionCost()].merge(tracked.reader.cost)
+            if let growth = tracked.reader.lastGrowthAt {
+                sidechainGrowthByParent[parentKey] =
+                    [sidechainGrowthByParent[parentKey], growth].compactMap { $0 }.max()
+            }
         }
         var rows: [SessionRow] = []
         for (_, tracked) in sessions where tracked.everHadProcess && !tracked.reader.isSidechain {
@@ -276,7 +296,8 @@ public actor SessionStore {
             if let pid = tracked.pid, tracked.adapter.usesNetworkActivity {
                 startNetProbeIfNeeded(key: key, pid: pid, adapter: tracked.adapter)
             }
-            let effectiveGrowth = [tracked.reader.lastGrowthAt, netActiveAt[key]]
+            let effectiveGrowth = [tracked.reader.lastGrowthAt, netActiveAt[key],
+                                   sidechainGrowthByParent[key]]
                 .compactMap { $0 }.max()
             let signals = SessionSignals(
                 processAlive: tracked.pid != nil,
@@ -332,6 +353,16 @@ public actor SessionStore {
         let states = rows(at: now).map(\.state)
         return MenuBarSummary(worstState: SessionState.worst(of: states),
                               activeCount: states.filter { $0 != .ended }.count)
+    }
+
+    /// Summary from rows the caller already fetched. The hot refresh path builds
+    /// the row list once and passes it here instead of paying a second full
+    /// `rows()` pass (which re-copies every session's cost). `nonisolated` so the
+    /// caller derives it without a second actor hop. The zero-arg overload above
+    /// stays for the debug CLI and tests.
+    public nonisolated func menuBarSummary(from rows: [SessionRow]) -> MenuBarSummary {
+        MenuBarSummary(worstState: SessionState.worst(of: rows.map(\.state)),
+                       activeCount: rows.filter { $0.state != .ended }.count)
     }
 
     /// Dollars attributed to entries whose own timestamps fall today —
@@ -533,9 +564,7 @@ public actor SessionStore {
     /// no error and no way out. One re-read per 10 minutes is not a cost worth
     /// defending against.
     private func diskUsage(for adapter: any AgentAdapter, source: URL) -> UsageLimitSnapshot? {
-        guard let mtime = (try? FileManager.default.attributesOfItem(
-                  atPath: source.path))?[.modificationDate] as? Date
-        else { return nil }
+        guard let mtime = Self.modificationDate(ofPath: source.path) else { return nil }
         let now = Date()
         if let cache = diskUsageCache[source.path], cache.mtime == mtime,
            now.timeIntervalSince(cache.readAt) < configuration.usageRereadInterval,
@@ -557,17 +586,28 @@ public actor SessionStore {
     private var netProbes: [String: Task<Void, Never>] = [:]
     private var reconcileMtimes: [String: Date] = [:]
 
+    /// File mtime via a single `stat(2)`. `FileManager.attributesOfItem` builds
+    /// a whole attribute dictionary (owner, permissions, type, four dates…) to
+    /// hand back the one field we read, and — per the audit's measurement — is
+    /// ~35x more expensive; this runs for every tracked transcript on every 2s
+    /// tick, so the difference is the biggest slice of the app's resting CPU.
+    /// Returns nil when the path can't be stat'd (missing/unreadable).
+    private static func modificationDate(ofPath path: String) -> Date? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)
+                    + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000)
+    }
+
     /// FSEvents occasionally drops events (observed live: a session grew
     /// and the app never heard). A cheap stat per tracked transcript on
     /// every rows() pass guarantees growth is noticed within one tick.
     private func reconcileWithDisk() {
-        let fm = FileManager.default
         for (key, tracked) in sessions {
             let url = tracked.reader.url
-            var newest = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
-                ?? .distantPast
+            var newest = Self.modificationDate(ofPath: url.path) ?? .distantPast
             for suffix in ["-wal", "-shm"] {
-                if let m = (try? fm.attributesOfItem(atPath: url.path + suffix))?[.modificationDate] as? Date {
+                if let m = Self.modificationDate(ofPath: url.path + suffix) {
                     newest = max(newest, m)
                 }
             }
@@ -646,6 +686,15 @@ public actor SessionStore {
                 costClaims.release(owner: reader.sessionID)
             }
             sessions.removeValue(forKey: key)
+            // Every per-session dictionary keyed by the same key must be pruned
+            // in lockstep, or a process that runs for weeks accumulates one dead
+            // entry apiece for every session it ever saw. The net probe would
+            // self-clear via its own defer once its pid goes nil, but cancel it
+            // here so the detached loop stops now instead of on its next wake.
+            netSamples.removeValue(forKey: key)
+            netActiveAt.removeValue(forKey: key)
+            reconcileMtimes.removeValue(forKey: key)
+            netProbes.removeValue(forKey: key)?.cancel()
         }
         pendingHookSignals = pendingHookSignals.filter { _, signal in
             signal.timestamp >= cutoff
@@ -655,7 +704,17 @@ public actor SessionStore {
     private func rematch() {
         for adapter in configuration.adapters {
             let candidates = sessions.compactMap { key, tracked -> SessionMatchCandidate? in
-                guard tracked.adapter.id == adapter.id else { return nil }
+                // Sidechains (sub-agent transcripts) never compete for a process.
+                // A Claude Code sub-agent lives in the SAME project dir as its
+                // parent and, while it is being written, is the newest transcript
+                // there — so the matcher (newest-first within a dir) would award
+                // the parent's single pid to the sidechain. The parent transcript
+                // would then read unpaired → Ended → auto-hidden, and the live
+                // parent gets no row at all during exactly the fan-out workload
+                // this app exists for. Excluding sidechains leaves the parent as
+                // the sole candidate in its dir, so it keeps the pid and its row.
+                guard tracked.adapter.id == adapter.id, !tracked.reader.isSidechain
+                else { return nil }
                 return SessionMatchCandidate(
                     sessionID: key,
                     projectDirName: tracked.projectDirName,
@@ -670,5 +729,15 @@ public actor SessionStore {
                 if pid != nil { sessions[candidate.sessionID]?.everHadProcess = true }
             }
         }
+        // A sidechain must never carry a pid: it is excluded from matching above,
+        // so any pid it still holds is stale (assigned in an earlier tick before
+        // its first line revealed `isSidechain`). Clear it so a sidechain can
+        // never be read as "alive" — it contributes only cost and growth to its
+        // parent, never a process. (Collect keys first, then mutate, to avoid
+        // overlapping access to `sessions`.)
+        let sidechainKeys = sessions.compactMap { key, tracked in
+            tracked.reader.isSidechain ? key : nil
+        }
+        for key in sidechainKeys { sessions[key]?.pid = nil }
     }
 }

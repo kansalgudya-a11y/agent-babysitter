@@ -32,14 +32,52 @@ public enum HooksInstaller {
     /// grow the log unbounded — appends just stop until the app truncates.
     static let maxLogBytesShell = "5242880"
 
-    private static func hookCommand(eventLogPath: String) -> String {
-        // Hook stdin carries one JSON event; append it as a line to the event
-        // log (file-drop transport, no sockets). umask keeps a freshly
-        // created log private; stdin is always drained so the writer never
-        // sees a broken pipe. The trailing comment is the removal marker.
-        "umask 077; mkdir -p \"$(dirname '\(eventLogPath)')\"; "
-        + "if [ \"$(stat -f%z '\(eventLogPath)' 2>/dev/null || echo 0)\" -lt \(maxLogBytesShell) ]; "
-        + "then { cat; echo; } >> '\(eventLogPath)'; else cat >/dev/null; fi #\(marker)"
+    private static func hookCommand(event: String, eventLogPath: String) -> String {
+        // Hook stdin carries one single-line JSON event (file-drop transport,
+        // no sockets). Shared shell: umask keeps a freshly created log private;
+        // the size guard lives in the shell so an orphaned install (app quit or
+        // deleted with the toggle on) can't grow the log unbounded — appends
+        // just stop until the app truncates. The log directory is created once
+        // at install time (and re-created at every launch), so the per-call hot
+        // path no longer spawns `mkdir`/`dirname`. The trailing comment is the
+        // removal marker.
+        let sizeGuard =
+            "[ \"$(stat -f%z '\(eventLogPath)' 2>/dev/null || echo 0)\" -lt \(maxLogBytesShell) ]"
+        let writer: String
+        if event == "PreToolUse" {
+            // PreToolUse fires on EVERY tool call and its payload is the only
+            // one carrying `tool_input` — the raw shell command lines and file
+            // contents the app never reads. It consumes only session_id +
+            // tool_name from this event (verified: hook payloads carry no
+            // rate_limits — that arrives via the status-line writer), so awk
+            // reconstructs a minimal line and none of the verbatim payload ever
+            // reaches disk. awk reads stdin to EOF — draining it so the writer
+            // never sees a broken pipe — and appends via its own redirection,
+            // so a missing log directory degrades to a silent no-op rather than
+            // an unwritten, undrained call.
+            writer = "awk '\(preToolUseAwk(eventLogPath: eventLogPath))' 2>/dev/null"
+        } else {
+            // Notification/Stop are infrequent and carry no `tool_input`; their
+            // message / last_assistant_message text IS consumed, so append the
+            // event verbatim. `echo` terminates the line; the else-branch drains
+            // stdin so a capped log still never breaks the writer's pipe.
+            writer = "{ cat; echo; } >> '\(eventLogPath)'"
+        }
+        return "umask 077; if \(sizeGuard); then \(writer); else cat >/dev/null; fi #\(marker)"
+    }
+
+    /// awk program (single-quoted inside the hook shell) that extracts only
+    /// `session_id` and `tool_name` from a PreToolUse payload and appends a
+    /// minimal JSON line — never `tool_input`. `\42` is the double-quote
+    /// character; the octal escape keeps emitted quotes clear of the enclosing
+    /// shell and Swift quoting. First-match is correct because both fields
+    /// serialize before `tool_input` in Claude Code's payload and no observed
+    /// `tool_input` value carries a look-alike key; a line without a session_id
+    /// prints nothing and the parser skips it.
+    private static func preToolUseAwk(eventLogPath: String) -> String {
+        "match($0,/\"session_id\"[ \\t]*:[ \\t]*\"[^\"]*\"/){s=substr($0,RSTART,RLENGTH);sub(/^\"session_id\"[ \\t]*:[ \\t]*\"/,\"\",s);sub(/\"$/,\"\",s)}"
+        + " match($0,/\"tool_name\"[ \\t]*:[ \\t]*\"[^\"]*\"/){t=substr($0,RSTART,RLENGTH);sub(/^\"tool_name\"[ \\t]*:[ \\t]*\"/,\"\",t);sub(/\"$/,\"\",t)}"
+        + " END{if(s!=\"\")printf(\"{\\42hook_event_name\\42:\\42PreToolUse\\42,\\42session_id\\42:\\42%s\\42,\\42tool_name\\42:\\42%s\\42}\\n\",s,t) >> \"\(eventLogPath)\"}"
     }
 
     // MARK: - Pure transforms (testable without touching the filesystem)
@@ -54,8 +92,11 @@ public enum HooksInstaller {
         var root = try parse(data)
         var hooks = root["hooks"] as? [String: Any] ?? [:]
 
-        let command = hookCommand(eventLogPath: eventLogPath)
         for event in hookEvents {
+            // The command differs per event (PreToolUse is minimised), so it is
+            // computed here — both to append fresh entries and to upgrade ours
+            // in place when the template changed since it was installed.
+            let command = hookCommand(event: event, eventLogPath: eventLogPath)
             var entries = hooks[event] as? [[String: Any]] ?? []
             if entries.contains(where: isOurs) {
                 // Upgrade our entry in place when the command template has
@@ -122,17 +163,51 @@ public enum HooksInstaller {
 
     public static func install(settingsURL: URL = defaultSettingsURL,
                                eventLogPath: String = defaultEventLogURL.path) throws {
-        let current = try? Data(contentsOf: settingsURL)
-        let updated = try settingsWithHooksInstalled(current, eventLogPath: eventLogPath)
-        try FileManager.default.createDirectory(
-            at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try updated.write(to: settingsURL, options: .atomic)
+        // Create the event-log directory once, here, so the per-tool-call hook
+        // never has to spawn `mkdir`/`dirname` on its hot path.
+        try? FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: eventLogPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try rewriteSettings(at: settingsURL) {
+            try settingsWithHooksInstalled($0, eventLogPath: eventLogPath)
+        }
     }
 
     public static func uninstall(settingsURL: URL = defaultSettingsURL) throws {
-        guard let current = try? Data(contentsOf: settingsURL) else { return }
-        let updated = try settingsWithHooksRemoved(current)
-        try updated.write(to: settingsURL, options: .atomic)
+        guard FileManager.default.fileExists(atPath: settingsURL.path) else { return }
+        try rewriteSettings(at: settingsURL) {
+            try settingsWithHooksRemoved($0)
+        }
+    }
+
+    /// Read → transform → write, re-reading the file immediately before the
+    /// write and rebasing onto any concurrent edit. Claude Code writes the same
+    /// `settings.json` (permission grants, model, etc.); a naive read-then-write
+    /// clobbers whatever it wrote in between, so a permission the user just
+    /// changed would vanish. If the on-disk bytes changed since we read them we
+    /// re-apply the transform to the newer copy instead. The transform is
+    /// idempotent (it keys off `marker`), so rebasing preserves both edits. A
+    /// residual TOCTOU window remains — nothing short of file locking, which
+    /// Claude Code doesn't participate in, can close it — but the common race is
+    /// narrowed to microseconds and the lost-edit case is avoided.
+    private static func rewriteSettings(at url: URL,
+                                        _ transform: (Data?) throws -> Data) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var baseline = try? Data(contentsOf: url)
+        for _ in 0..<4 {
+            let updated = try transform(baseline)
+            let latest = try? Data(contentsOf: url)
+            guard latest == baseline else {   // concurrent writer — rebase and retry
+                baseline = latest
+                continue
+            }
+            try updated.write(to: url, options: .atomic)
+            return
+        }
+        // Persistent concurrent writer: apply once onto the latest content so we
+        // still make progress rather than spinning.
+        try transform(try? Data(contentsOf: url)).write(to: url, options: .atomic)
     }
 
     // MARK: - Internals

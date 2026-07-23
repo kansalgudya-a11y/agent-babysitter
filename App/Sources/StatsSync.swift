@@ -6,8 +6,28 @@ import AgentBabysitterCore
 /// so "all-time" spans all your Macs. The merged view is never written back to
 /// a machine's own ledger. Opt-in. No iCloud entitlement needed — the app
 /// isn't sandboxed. Main-actor isolated: only ever called from the model.
+///
+/// Honesty note: the ledger is keyed by agent id, model id and PROJECT FOLDER
+/// NAME — so turning this on copies the names of the folders you work in (not
+/// only aggregate numbers) into iCloud Drive. `ownFileURL` exposes exactly what
+/// leaves this Mac, and `removeOwnFile()` deletes it again when sync is turned
+/// off. Transcripts and prompts are never part of the wire.
 @MainActor
 enum StatsSync {
+
+    /// Outcome of the last `writeIfChanged`, so the model/UI can tell the user
+    /// when the toggle is ON but nothing is actually leaving: iCloud Drive isn't
+    /// set up (`.unavailable`), or a write failed (`.failed`). Silent success
+    /// AND silent failure — a toggle that did nothing forever — was the old bug.
+    enum SyncStatus: Equatable {
+        case idle
+        case written        // a fresh file was written this call
+        case upToDate       // nothing changed since last write
+        case unavailable    // no iCloud Drive folder — the toggle is a no-op here
+        case failed(String) // encode or write error
+    }
+
+    private(set) static var lastStatus: SyncStatus = .idle
 
     private static var folderCache: (at: Date, url: URL?)?
 
@@ -50,9 +70,10 @@ enum StatsSync {
     }
 
     /// Write THIS machine's own ledger (never a merged one) to its own file,
-    /// skipping the write when nothing changed since last time.
+    /// skipping the write when nothing changed since last time. Records the
+    /// outcome in `lastStatus` so an on-but-doing-nothing state is visible.
     static func writeIfChanged(_ ownLedger: StatsLedger.Ledger) {
-        guard let folder else { return }
+        guard let folder else { lastStatus = .unavailable; return }
         let wire = Wire(costByAgent: ownLedger.costByAgent, costByProject: ownLedger.costByProject,
                         costByModel: ownLedger.costByModel,
                         sessionCounts: ownLedger.sessionCounts, activeMinutes: ownLedger.activeMinutes)
@@ -60,10 +81,44 @@ enum StatsSync {
         // the byte-compare below is a true "did anything change" check.
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        guard let data = try? encoder.encode(wire) else { return }
-        guard data != lastWrittenData else { return }
-        try? data.write(to: folder.appendingPathComponent("stats-\(machineID).json"))
-        lastWrittenData = data
+        guard let data = try? encoder.encode(wire) else {
+            lastStatus = .failed("Couldn't encode stats for sync.")
+            return
+        }
+        guard data != lastWrittenData else { lastStatus = .upToDate; return }
+        do {
+            try data.write(to: folder.appendingPathComponent("stats-\(machineID).json"))
+            lastWrittenData = data
+            lastStatus = .written
+        } catch {
+            lastStatus = .failed(error.localizedDescription)
+        }
+    }
+
+    /// THIS machine's own synced file, if the iCloud folder exists — for a
+    /// "Show synced file in Finder" affordance and for `removeOwnFile`. It is
+    /// the exact set of bytes this Mac uploads.
+    static var ownFileURL: URL? {
+        folder.map { $0.appendingPathComponent("stats-\(machineID).json") }
+    }
+
+    /// Delete THIS machine's file from iCloud (e.g. when the user turns sync
+    /// off). We only ever touch our own file; siblings' files stay theirs.
+    /// Returns false if the folder is unavailable or the removal failed.
+    @discardableResult
+    static func removeOwnFile() -> Bool {
+        guard let url = ownFileURL else { lastStatus = .unavailable; return false }
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            lastWrittenData = nil   // so re-enabling sync writes a fresh file
+            lastStatus = .idle
+            return true
+        } catch {
+            lastStatus = .failed(error.localizedDescription)
+            return false
+        }
     }
 
     /// A DISPLAY-only view summing this machine's ledger with every sibling's

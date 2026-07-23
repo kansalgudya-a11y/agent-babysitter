@@ -1,8 +1,15 @@
 import Foundation
 import AgentBabysitterCore
 
-// Dogfooding tool: run the exact pipeline the menu bar renders from and
-// print what it shows. `swift run babysitter-debug`
+// Dogfooding tool: runs the Core pipeline the menu bar renders from and prints
+// what it shows. `swift run babysitter-debug`
+//
+// One deliberate gap vs. the running app: LIVE USAGE — the opt-in network fetch
+// that fills the Claude Code, Cursor, and Manus usage percentages — lives in the
+// App layer (LiveUsageService), which Core, and therefore this CLI, cannot reach.
+// So the usage-limits section below reflects ONLY readings recorded on disk;
+// those three agents' percentages can differ from, or be missing vs., the menu.
+// A banner above that section says so at runtime. Everything else matches the app.
 
 // OpenClawAdapter.allSurfaces() MUST precede ClaudeCodeAdapter() so the SDK
 // surface claims OpenClaw's temp-workspace transcripts first (mirrors AppModel).
@@ -58,6 +65,12 @@ let today = await store.todayCost()
 print(String(format: "\ntoday's total: $%.2f", today.dollars))
 
 let limits = await store.usageLimits()
+// Live usage is an App-layer, opt-in network fetch (LiveUsageService) this
+// Core-only CLI never runs, so warn before printing: the Claude Code, Cursor,
+// and Manus rows here reflect on-disk readings only and can differ from — or be
+// absent vs. — the menu. Do not trust this section for those three agents.
+print("\nNOTE: live usage not exercised by this CLI — claude-code / cursor / "
+    + "manus percentages can differ from the menu (App-layer LiveUsageService).")
 // Not all windows are five hours — Codex's primary is weekly, Cursor's a
 // monthly billing cycle — so each line states its own length.
 if limits.isEmpty {

@@ -108,27 +108,80 @@ struct MenuContent: View {
         .padding(.bottom, 6)
     }
 
-    /// Plain-language one-liner for the top of the dropdown.
+    /// Plain-language one-liner for the top of the dropdown. A priority ladder
+    /// across the three domains the popover reports — usage limits, agent
+    /// state, today's budget — so the headline is always the worst TRUE thing,
+    /// not merely the agent count. A live agent process is never allowed to
+    /// read as "all caught up".
     private var statusPhrase: String {
         let rows = model.rows
         let waiting = rows.filter { $0.state == .waitingForInput }.count
         let stalled = rows.filter { $0.state == .stalled }.count
         let working = rows.filter { $0.state == .working }.count
+        // Top of the ladder: a running agent whose usage window is nearly out.
+        // MEASURED reading only (never the pace estimate) so an idle-inflated
+        // number can't manufacture the most alarming line on the screen.
+        if let pct = worstRunningLimitPercent, pct >= 95 {
+            return "A usage limit is nearly out (\(Int(pct))%)"
+        }
         if waiting > 0 { return waiting == 1 ? "1 agent needs you" : "\(waiting) agents need you" }
         if stalled > 0 { return stalled == 1 ? "1 agent may be stuck" : "\(stalled) agents may be stuck" }
+        if dailyBudgetPassed { return "Past today's budget" }
         if working > 0 { return working == 1 ? "1 agent working" : "\(working) agents working" }
+        // A finished, idle session ("done") is the honest "all caught up" — keep
+        // it. Only fall through to the running line when NO row is active and
+        // NONE is done, i.e. a live process has no row to show yet (a parent
+        // that is only delegating to sub-agents, or a session still being read)
+        // — that case must not read as "watching for sessions" either.
         if rows.contains(where: { $0.state == .done }) { return "All caught up" }
+        if !model.runningAgentIDs.isEmpty {
+            let n = model.runningAgentIDs.count
+            return n == 1 ? "1 agent running" : "\(n) agents running"
+        }
         return "Watching for agent sessions"
+    }
+
+    /// The worst MEASURED usage-% across agents with a live process. The pace
+    /// estimate is deliberately excluded so an extrapolated number can never
+    /// drive the headline. nil when nothing running reports a percentage.
+    private var worstRunningLimitPercent: Double? {
+        model.usageLimits
+            .filter { model.runningAgentIDs.contains($0.key) }
+            .compactMap { $0.value.usedPercent }
+            .max()
+    }
+
+    /// Today's spend has crossed the daily budget. The budget is entered in the
+    /// display currency (see PreferencesView), while `todayCost.dollars` is USD,
+    /// so convert with the same rate the rest of the app uses before comparing.
+    private var dailyBudgetPassed: Bool {
+        guard model.dailyBudget > 0 else { return false }
+        let rate = model.effectiveRate > 0 ? model.effectiveRate : 1
+        return model.todayCost.dollars >= model.dailyBudget / rate
     }
 
     private var emptyState: some View {
         VStack(spacing: 6) {
-            Text("All quiet right now.")
-                .foregroundStyle(.secondary)
-            Text("Start a Claude Code, Codex, or Antigravity session and it will appear here automatically.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            if !model.runningAgentIDs.isEmpty {
+                // A live agent process exists but has produced no row yet —
+                // never tell the user to start one that is already running.
+                Text("An agent is running — catching up on its session…")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("Its row will appear here in a moment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("All quiet right now.")
+                    .foregroundStyle(.secondary)
+                // Names no specific agents: the app supports a dozen, and
+                // listing three read as "only these three are seen".
+                Text("Start a coding agent session and it will appear here automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding()
@@ -172,8 +225,16 @@ struct MenuContent: View {
     /// Two-line session rows ≈44pt, group headers ≈26pt, list padding 12pt.
     /// An expanded drill-in adds ≈150pt, and the cap lifts so it isn't
     /// clipped — seeing it is the whole point of expanding.
+    ///
+    /// A row carrying a title (every Claude Code row — the title is the user's
+    /// last prompt) draws a THIRD line, so a flat 44 under-measured exactly the
+    /// common case and a scrollbar appeared in a list that would have fitted.
+    /// Count the taller rows at ≈60.
     private var estimatedListHeight: CGFloat {
-        let rows = CGFloat(model.rows.count) * 44
+        let rows = model.rows.reduce(CGFloat(0)) { total, row in
+            let titled = row.title.map { $0 != row.projectName } ?? false
+            return total + (titled ? 60 : 44)
+        }
         let headers = CGFloat(groupedRows.count) * 26
         let expanded = CGFloat(expandedRows.count) * 150
         return min(expandedRows.isEmpty ? 380 : 540, rows + headers + expanded + 12)
@@ -223,13 +284,26 @@ struct MenuContent: View {
         // Gemini keeps its usage on Google's servers (link-only, no local
         // reading), so it sits at the very bottom, below even reset windows.
         func bottomTier(_ id: String) -> Int { id.hasPrefix("gemini") ? 1 : 0 }
+        // Within a tier the agent closest to running out floats to the top —
+        // the section exists to answer "am I about to run out", so it can't
+        // answer in a fixed alphabetical-ish order. Uses the pace-corrected
+        // "right now" percentage when one applies, the raw reading otherwise;
+        // -1 sinks rows with no percentage below any real reading. The fixed
+        // `order` stays only as a tiebreaker between equal percentages.
+        func effectivePercent(_ limit: UsageLimitSnapshot?) -> Double {
+            guard let limit else { return -1 }
+            return UsageForecast.estimatedCurrentPercent(limit, now: now)
+                ?? limit.usedPercent ?? -1
+        }
         let candidates = model.usageAgents
             .map { (id: $0.id, name: $0.name,
                     limit: model.usageLimits[$0.id],
                     running: model.runningAgentIDs.contains($0.id)) }
             .sorted { a, b in
-                (bottomTier(a.id), resetTier(a.limit), order[a.id] ?? 99, a.id)
-                    < (bottomTier(b.id), resetTier(b.limit), order[b.id] ?? 99, b.id)
+                (bottomTier(a.id), resetTier(a.limit), -effectivePercent(a.limit),
+                 order[a.id] ?? 99, a.id)
+                    < (bottomTier(b.id), resetTier(b.limit), -effectivePercent(b.limit),
+                       order[b.id] ?? 99, b.id)
             }
         // Surfaces of one product share ONE account quota — Antigravity's
         // umbrella, IDE and CLI ids all resolve the same state.vscdb — so
@@ -338,6 +412,17 @@ struct MenuContent: View {
         let entries = limitEntries
         // How many agents "Show all" would reveal that the collapsed list hides.
         let hiddenCount = model.usageAgents.count - entries.count
+        // Under "Show all", sibling surfaces of one product (Antigravity's
+        // umbrella, IDE and CLI ids all resolve the same account) are listed
+        // separately and print the SAME reading — three identical bars read as
+        // three separate quotas. Mark the repeats so they read as one account
+        // stated more than once. Collapsed, the de-dup in `limitEntries` means
+        // this set is empty; computed here so it shares the one `entries` walk.
+        var seenKeys: Set<String> = []
+        let sharedAccountIDs: Set<String> = Set(entries.compactMap { entry -> String? in
+            guard let key = entry.limit.map(Self.quotaKey) else { return nil }
+            return seenKeys.insert(key).inserted ? nil : entry.id
+        })
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 // Not all agents use a 5-hour window: Cursor is a monthly
@@ -383,7 +468,7 @@ struct MenuContent: View {
                     .foregroundStyle(.tertiary)
             }
             ForEach(entries, id: \.id) { entry in
-                limitRow(entry)
+                limitRow(entry, sharedAccount: sharedAccountIDs.contains(entry.id))
                     .opacity(limitRowOpacity(entry))
             }
         }
@@ -391,17 +476,22 @@ struct MenuContent: View {
         .padding(.vertical, 8)
     }
 
-    /// Non-running apps and rolled-over windows recede below live readings.
+    /// Non-running apps and rolled-over windows recede below live readings —
+    /// but only slightly. The row already draws every caption in `.secondary`,
+    /// so a heavy row-level alpha (was 0.55) multiplied that down to a
+    /// watermark: "resets in 5d 16h" and "as of 1d ago" — the facts the section
+    /// exists for — fell to ~1.4:1 contrast. Keep the recede readable.
     private func limitRowOpacity(_ entry: (id: String, name: String,
                                            limit: UsageLimitSnapshot?, running: Bool)) -> Double {
-        if !entry.running { return 0.55 }
-        if entry.limit?.isExpired() == true { return 0.6 }
+        if !entry.running { return 0.8 }
+        if entry.limit?.isExpired() == true { return 0.85 }
         return 1
     }
 
     @ViewBuilder
     private func limitRow(_ entry: (id: String, name: String,
-                                    limit: UsageLimitSnapshot?, running: Bool)) -> some View {
+                                    limit: UsageLimitSnapshot?, running: Bool),
+                          sharedAccount: Bool = false) -> some View {
         VStack(spacing: 1) {
             HStack(spacing: 8) {
                 Text(entry.name)
@@ -434,11 +524,26 @@ struct MenuContent: View {
                         // estimate ("≈9%") once one applies.
                         let estimate = UsageForecast.estimatedCurrentPercent(limit)
                         let shown = estimate ?? limit.usedPercent ?? 0
+                        // Severity colour comes from the MEASURED reading, never
+                        // the extrapolation: idle for an hour, the pace estimate
+                        // climbs toward ~100% while the real number holds — an
+                        // invented figure must not alone paint the bar red or
+                        // cross an alert colour. Fill still tracks the estimate
+                        // (its whole purpose), but the colour tier stays honest.
+                        let measured = limit.usedPercent ?? shown
+                        let tint: Color = measured >= 90 ? .red
+                            : measured >= 70 ? .orange : .green
                         ProgressView(value: min(shown, 100) / 100)
-                            .tint(shown >= 90 ? .red : shown >= 70 ? .orange : .green)
+                            .tint(tint)
+                        // The primary % now carries that same severity colour
+                        // (the bar and the secondary weekly figure already did,
+                        // leaving the headline number neutral grey), and an
+                        // estimated value is set in italics so it can never be
+                        // read as a measurement — the "≈" alone is easy to miss.
                         Text("\(estimate != nil ? "≈" : "")\(Int(shown))%")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .italic(estimate != nil)
+                            .foregroundStyle(tint)
                             .frame(width: 44, alignment: .trailing)
                             .help(limitHelp(limit, estimate: estimate))
                     }
@@ -468,7 +573,14 @@ struct MenuContent: View {
                     .font(.caption)
                     .help("Gemini keeps your usage limits on Google's servers, behind your Google login — they're never stored on your Mac, so they can't be shown here without your full Google session. This opens your live usage page in the browser.")
                 } else {
-                    Text(entry.running ? "not shared by this app" : "no recent reading")
+                    // Cursor and Manus DO share their numbers — a "Show my real
+                    // numbers" button sits directly below this row. Saying "not
+                    // shared by this app" right above that button reads as the
+                    // app contradicting itself, so name the true state ("no
+                    // reading yet") instead of denying the data exists.
+                    let offersFetch = entry.id == "cursor" || entry.id == "manus"
+                    Text(offersFetch ? "no reading yet"
+                         : entry.running ? "not shared by this app" : "no recent reading")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .help(entry.id.hasPrefix("antigravity")
@@ -528,6 +640,16 @@ struct MenuContent: View {
                         .font(.caption2)
                         .help("Fetches your usage from \(entry.id == "cursor" ? "cursor.com" : "manus.im") with the login this Mac already has — nothing to type, fully reversible in Settings → Advanced.")
                 }
+            }
+            // "Show all" lists every surface of a product separately; sibling
+            // surfaces that resolve one account (Antigravity umbrella/IDE/CLI)
+            // then print the same reading. Without this note three identical
+            // bars read as three separate quotas rather than one shown thrice.
+            if sharedAccount {
+                Text("same account as above")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -595,11 +717,18 @@ struct MenuContent: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .help("At the current pace this window runs out ~\(Self.humanDuration(early)) before it resets. Ease off or switch agents to stretch it. You can choose when this line appears in Settings → Notifications.")
         case .landing(let percent):
+            // Reassuring green only while the landing is genuinely clear. Once
+            // the pace lands at or above the user's alert threshold, a green
+            // "no trouble ahead" line under an already-hot bar contradicts it —
+            // recolour to caution so the colour system points the same way.
+            let clear = percent < Int(model.limitAlertThreshold)
             Text("\(prefix)on pace for ~\(percent)% at reset")
                 .font(.caption2)
-                .foregroundStyle(.green)
+                .foregroundStyle(clear ? .green : .orange)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .help("At the current pace this window lands around \(percent)% when it resets — no limit trouble ahead. You can choose when this line appears in Settings → Notifications.")
+                .help(clear
+                      ? "At the current pace this window lands around \(percent)% when it resets — no limit trouble ahead. You can choose when this line appears in Settings → Notifications."
+                      : "At the current pace this window lands around \(percent)% when it resets — already into your alert range. You can choose when this line appears in Settings → Notifications.")
         case .none:
             EmptyView()
         }
@@ -714,21 +843,21 @@ struct MenuContent: View {
         // implies a fresh one.
         let window = windowLabel(limit.windowMinutes)
         if expired {
-            pieces.append(Text(window.tag).foregroundColor(.secondary.opacity(0.7)))
-            pieces.append(Text("window reset").foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text(window.tag).foregroundColor(.secondary))
+            pieces.append(Text("window reset").foregroundColor(.secondary))
         }
         // Codex's PRIMARY window is weekly (10080, secondary null) — unlike
         // Claude's 5-hour. A bare percentage doesn't say which. 5h windows are
         // left untouched: naming the window is noise on one that refills before
         // your coffee, and their caption already carries the reset clock.
         if limit.windowMinutes > 360, !expired {
-            pieces.append(Text(window.tag).foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text(window.tag).foregroundColor(.secondary))
         }
         // Credit-based agents (Manus) carry the balance in the plan label —
         // keep it visible even when the bar shows the daily quota.
         let hasCreditBalance = limit.plan?.localizedCaseInsensitiveContains("credit") ?? false
         if let plan = limit.plan, hasCreditBalance {
-            pieces.append(Text(plan).foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text(plan).foregroundColor(.secondary))
         }
         // "How much is left" is the number you plan a week around. Derive it
         // from the SAME shown value the bar and the trailing % use, and
@@ -741,10 +870,10 @@ struct MenuContent: View {
             let estimate = UsageForecast.estimatedCurrentPercent(limit)
             let shown = Int(min(max(estimate ?? used, 0), 100))
             pieces.append(Text("\(estimate != nil ? "≈" : "")\(100 - shown)% left")
-                .foregroundColor(.secondary.opacity(0.7)))
+                .foregroundColor(.secondary))
         }
         if let phrase = resetPhrase(limit.resetsAt) {
-            pieces.append(Text(phrase).foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text(phrase).foregroundColor(.secondary))
         }
         // The agent's OTHER window, when it publishes one. Named exactly as a
         // 7-day primary is ("weekly"), because it is the same window — this
@@ -762,16 +891,16 @@ struct MenuContent: View {
         // merely can't date would hide a true reading.
         if let weekly = limit.weeklyUsedPercent, limit.weeklyWindow?.isExpired() != true {
             let color: Color = weekly >= 90 ? .red : weekly >= 70 ? .orange
-                : .secondary.opacity(0.7)
+                : .secondary
             pieces.append(Text("\(UsageWindowName.secondaryWeekly.tag) \(Int(weekly))%")
                 .foregroundColor(color))
         }
         if !pieces.isEmpty, let staleness = Self.stalenessPhrase(limit) {
-            pieces.append(Text(staleness).foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text(staleness).foregroundColor(.secondary))
         }
         guard var caption = pieces.first else { return nil }
         for piece in pieces.dropFirst() {
-            caption = caption + Text(" · ").foregroundColor(.secondary.opacity(0.7)) + piece
+            caption = caption + Text(" · ").foregroundColor(.secondary) + piece
         }
         return caption
     }
@@ -919,8 +1048,12 @@ struct MenuContent: View {
             .help(model.notificationsMuted ? "Alerts are off — click to turn back on"
                                            : "Pause all alerts")
             Button {
+                // Activate BEFORE opening, and with ignoringOtherApps, exactly
+                // like the stats/history buttons above — a menu-bar app that
+                // opens the window first lands it behind the frontmost app, the
+                // very failure the stats button's own comment documents.
+                NSApp.activate(ignoringOtherApps: true)
                 openSettings()
-                NSApp.activate()
             } label: {
                 Image(systemName: "gearshape")
             }
@@ -954,7 +1087,7 @@ struct LegendView: View {
                     Text("— \(meaning)").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Text("Click a session to jump to it · right-click for more options")
+            Text("Click a session to jump to it · ⌄ for details · right-click for more")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.top, 2)
@@ -1055,13 +1188,20 @@ struct SessionRowView: View {
                     if let elapsed = elapsedText {
                         Text("· \(elapsed)")
                     }
-                    if row.isUnreadable {
-                        Text("· can't read this session's log")
-                            .foregroundStyle(.orange)
-                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                // On its OWN line, not trailing the status pieces: as the last
+                // child of that HStack it was the first thing truncated away,
+                // and it is the one part that explains why the row shows no
+                // cost — the least skippable piece, clipped first.
+                if row.isUnreadable {
+                    Text("can't read this session's log")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
                 // The session's latest turn was an API error, so its cost reads
                 // $0 and it would otherwise pass for a cheap healthy row. Surface
                 // WHAT failed where the cost/detail caption goes.
@@ -1096,10 +1236,15 @@ struct SessionRowView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .opacity(hovering || isExpanded ? 0.8 : 0)
-            // opacity(0) still hit-tests; keep the hidden chevron from eating
-            // taps meant for the row.
-            .allowsHitTesting(hovering || isExpanded)
+            // Faintly visible at rest, not fully hidden: the drill-in holds the
+            // richest data in the app (the question it's stuck on, timings, cwd,
+            // the token split) and was reachable only by a chevron that appeared
+            // on hover and is named nowhere — so most users never found it. A
+            // resting affordance advertises it; hover/expanded brightens it.
+            .opacity(hovering || isExpanded ? 0.85 : 0.4)
+            // Now that it is always visible it should always be clickable too
+            // (it reads as a control); it no longer needs the hit-test gate that
+            // stopped an invisible chevron from eating taps meant for the row.
             .help(isExpanded ? "Hide details" : "Session details")
         }
         .padding(.horizontal, 12)

@@ -46,6 +46,16 @@ public final class TranscriptFileTailer {
     /// keep watching others but stop trusting this one.
     public static let unreadableThreshold = 50
 
+    /// Upper bound on raw bytes held in RAM per read step. A cold-start scan
+    /// has `offset == 0`, so a single `read(upToCount: size - offset)` pulls an
+    /// entire same-day transcript in at once — on this user's own data ~317 MB
+    /// of transcript peaked at ~893 MB resident once the parser's own copy of
+    /// that blob was counted. Reading in a fixed window caps the live raw bytes
+    /// regardless of file size. 4 MB is comfortably larger than any single
+    /// JSONL line, so the parser's partial-line buffer never has to span more
+    /// than one extra window.
+    public static let readChunkBytes = 4 * 1024 * 1024
+
     public var isUnreadable: Bool {
         parser.malformedLineCount > Self.unreadableThreshold
     }
@@ -96,24 +106,45 @@ public final class TranscriptFileTailer {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: offset)
-        let data = try handle.read(upToCount: Int(size - offset)) ?? Data()
-        offset += UInt64(data.count)
 
-        let entries = parser.consume(data)
-        for entry in entries {
-            reducer.consume(entry)
-            costAccumulator.consume(entry)
-            if let cwd = entry.cwd { lastKnownCWD = cwd }
-            if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
-            if entry.isSidechain { isSidechain = true }
-            if let limit = entry.usageLimit { lastUsageLimit = limit }
-            // File order is chronological: each assistant turn overwrites the
-            // verdict — an error sets it, a healthy turn clears it.
-            if case .assistant(let payload) = entry.kind {
-                // An error line with an empty text block must still show a
-                // caption, not a blank warning triangle — treat "" as absent.
-                let text = payload.firstText.flatMap { $0.isEmpty ? nil : $0 }
-                lastAPIError = payload.isAPIError ? (text ?? "API error") : nil
+        // Read the appended range [offset, size) in bounded windows rather than
+        // one `size - offset` allocation, folding each window as it parses so no
+        // whole-file raw buffer ever exists. Verified on 100/200/400 MB inputs:
+        // the old single read peaked at ~2x the byte range (the read blob plus
+        // the parser's copy of it), while windowing peaks at ~1x — for this
+        // user's ~317 MB same-day transcript that is ~893 MB down to ~320 MB.
+        // The residual ~1x is the file's own bytes transiting RAM as they are
+        // read, which reading the transcript at all requires; only the extra
+        // whole-file heap copy was avoidable, and it is gone.
+        //
+        // Bytes appended after `size` was sampled are left for the next catchUp,
+        // exactly as the single-read version did. TranscriptTailParser buffers a
+        // line straddling a window boundary until its newline arrives, so
+        // windowing changes memory only, never the entries produced (asserted by
+        // the >4 MB single-line case in the tailer tests).
+        var entries: [TranscriptEntry] = []
+        var remaining = Int(size - offset)
+        while remaining > 0 {
+            let want = min(Self.readChunkBytes, remaining)
+            guard let chunk = try handle.read(upToCount: want), !chunk.isEmpty else { break }
+            remaining -= chunk.count
+            offset += UInt64(chunk.count)
+            for entry in parser.consume(chunk) {
+                reducer.consume(entry)
+                costAccumulator.consume(entry)
+                if let cwd = entry.cwd { lastKnownCWD = cwd }
+                if let entrypoint = entry.entrypoint { lastKnownEntrypoint = entrypoint }
+                if entry.isSidechain { isSidechain = true }
+                if let limit = entry.usageLimit { lastUsageLimit = limit }
+                // File order is chronological: each assistant turn overwrites the
+                // verdict — an error sets it, a healthy turn clears it.
+                if case .assistant(let payload) = entry.kind {
+                    // An error line with an empty text block must still show a
+                    // caption, not a blank warning triangle — treat "" as absent.
+                    let text = payload.firstText.flatMap { $0.isEmpty ? nil : $0 }
+                    lastAPIError = payload.isAPIError ? (text ?? "API error") : nil
+                }
+                entries.append(entry)
             }
         }
         lastGrowthAt = attributes[.modificationDate] as? Date ?? Date()

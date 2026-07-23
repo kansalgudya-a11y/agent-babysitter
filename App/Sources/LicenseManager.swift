@@ -81,10 +81,23 @@ final class LicenseManager: ObservableObject {
             return
         }
         busy = true
+        lastError = nil
         defer { busy = false }
-        // Best effort: free the activation seat; clear locally regardless.
-        _ = await post("deactivate", body: ["license_key": stored.key,
-                                            "instance_id": stored.instanceID])
+        // Free the activation seat, then clear locally — but only once the
+        // server has actually answered. A transport failure (offline, or a
+        // Mac mid-wipe) means the seat is still held server-side; clearing
+        // anyway silently burns it, so the key can never be re-used and the
+        // customer hits the activation limit on their next Mac with nothing
+        // to show for it. On any server response (success, or "already
+        // deactivated"/"key not found") the seat is no longer ours, so we
+        // clear. Keep the key on a transport failure and tell the user.
+        let response = await post("deactivate", body: ["license_key": stored.key,
+                                                       "instance_id": stored.instanceID])
+        guard response != nil else {
+            lastError = "Couldn't reach the license server, so this Mac's seat "
+                + "wasn't freed. Check your connection and try again."
+            return
+        }
         clearLocal()
     }
 
@@ -97,6 +110,9 @@ final class LicenseManager: ObservableObject {
     // MARK: - Keychain (a purchased credential doesn't belong in defaults)
 
     private static let keychainService = "app.agentbabysitter.license"
+    /// A fixed account so the item is addressable (queried/updated/deleted by
+    /// service+account) rather than an anonymous service-only generic password.
+    private static let keychainAccount = "license"
 
     private static func keychainWrite(key: String, instanceID: String) {
         keychainDelete()
@@ -105,6 +121,14 @@ final class LicenseManager: ObservableObject {
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            // Data-protection keychain (not the legacy file keychain): its ACL
+            // is not bound to the signing identity, so a purchased key isn't
+            // re-prompted or lost every time the app's cdhash changes across
+            // builds/updates. AfterFirstUnlock keeps it readable for a
+            // login-item launch after a reboot without the user present.
+            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
             kSecValueData as String: payload,
         ]
         SecItemAdd(attributes as CFDictionary, nil)
@@ -114,6 +138,8 @@ final class LicenseManager: ObservableObject {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecUseDataProtectionKeychain as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -129,6 +155,8 @@ final class LicenseManager: ObservableObject {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         SecItemDelete(query as CFDictionary)
     }

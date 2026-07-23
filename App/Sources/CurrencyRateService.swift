@@ -1,11 +1,19 @@
 import Foundation
 import AgentBabysitterCore
 
-/// Fetches USD→currency exchange rates from a free, no-key feed and caches
-/// them. Only ever runs when the user has chosen a non-USD display currency —
-/// the default (USD) stays fully offline. Sends no user data: it only asks
-/// for public rates against USD, so it's privacy-safe despite being a network
-/// call. Rates change slowly, so a cached value is refreshed at most daily.
+/// Fetches USD→currency exchange rates from a free, no-key public feed
+/// (`open.er-api.com`) and caches them. This is a network call, and it is one
+/// of the app's opt-in outbound features: it runs ONLY while the user has
+/// chosen a non-USD display currency — choosing that currency is the opt-in.
+/// The default (USD) stays fully offline and makes no request. It sends no
+/// user data: the request asks only for public USD rates, so nothing about
+/// the user leaves the Mac. Rates change slowly, so a cached value is
+/// refreshed at most daily.
+///
+/// Honesty note: any UI copy claiming the app makes "no network connections"
+/// is false while a non-USD currency is selected — that copy must name this
+/// feed alongside the other opt-in calls (live usage, update check). Those
+/// strings live outside this file (PreferencesView, StatsView, FeatureGuide).
 actor CurrencyRateService {
 
     private let session: URLSession

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AgentBabysitterCore
 
 @main
@@ -7,6 +8,24 @@ struct AgentBabysitterApp: App {
     @StateObject private var model = AppModel()
 
     init() {
+        // Single-instance guard. LaunchServices only blocks a *second launch
+        // of the same bundle path*, so a copy dragged elsewhere (or a dev
+        // build alongside the installed app) can run concurrently — and two
+        // instances double every notification and race each other on the
+        // history file and ~/.claude/settings.json. If another copy of this
+        // bundle id is already running, hand off to it and exit. Skipped in
+        // snapshot mode, which is expected to run beside the real instance.
+        if !CommandLine.arguments.contains("--ui-snapshots"),
+           let bundleID = Bundle.main.bundleIdentifier {
+            let myPID = ProcessInfo.processInfo.processIdentifier
+            let others = NSRunningApplication
+                .runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier != myPID }
+            if let existing = others.first {
+                _ = existing.activate()
+                exit(0)
+            }
+        }
         UISnapshots.runIfRequested()  // exits after writing PNGs
     }
 
@@ -62,7 +81,10 @@ struct MenuBarLabel: View {
         // babysitter's job is exactly this warning.
         Group {
         switch style {
-        case "cost" where costToday > 0:
+        case "cost":
+            // Always render the amount the user asked to see — including "$0"
+            // on a fresh morning. Falling through to the moon icon at exactly
+            // zero made the preference look like it hadn't applied.
             composed(text: costLabel.isEmpty ? "$\(Int(costToday))" : costLabel)
         case "limit":
             if let hottestLimit {

@@ -514,6 +514,11 @@ enum UISnapshots {
                 MenuBarLabel(summary: .init(worstState: nil, activeCount: 0), limitDanger: true)
                 MenuBarLabel(summary: .init(worstState: .working, activeCount: 2),
                              style: "cost", costToday: 317.65)
+                // Zero today's cost must still render "$0" in the "cost" style,
+                // not silently fall back to the moon icon (looked like the
+                // preference hadn't applied).
+                MenuBarLabel(summary: .init(worstState: nil, activeCount: 0),
+                             style: "cost", costToday: 0)
                 MenuBarLabel(summary: .init(worstState: .working, activeCount: 2),
                              style: "limit", costToday: 0, hottestLimit: 43)
                 MenuBarLabel(summary: .init(worstState: .waitingForInput, activeCount: 1),
@@ -543,6 +548,20 @@ enum UISnapshots {
             SessionRowView(row: drill, isExpanded: true)
                 .frame(width: 330)
                 .padding(8))))
+
+        // Session History window, empty state — a brand-new install has no
+        // finished sessions yet. HistoryView is SwiftUI-native so it renders
+        // here (the Preferences tabs are AppKit Form/TabView and stay invisible
+        // to ImageRenderer, verified by eye instead). A *populated* History
+        // fixture needs applyFixture to accept a `sessionHistory:` array —
+        // sessionHistory is private(set) on AppModel, so it can't be injected
+        // from here yet (tracked as a cross-file follow-up).
+        let historyEmptyModel = AppModel()
+        historyEmptyModel.applyFixture(
+            rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+            usageLimits: [:], installedAgents: allInstalled, runningAgentIDs: [],
+            todayCost: SessionCost(), costHistory: [])
+        results.append(("history-empty", AnyView(HistoryView(model: historyEmptyModel))))
 
         return results
     }

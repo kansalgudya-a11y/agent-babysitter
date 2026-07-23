@@ -12,6 +12,16 @@ import AgentBabysitterCore
 /// successful `/v1/messages` call (`anthropic-ratelimit-unified-*`), so the
 /// probe is the smallest valid request — one haiku token. That token counts
 /// against the very quota being measured (disclosed in the toggle copy).
+///
+/// Durability note (honest): the Cursor and Manus reads replay the login
+/// token each vendor already stored on this Mac against that vendor's own
+/// private, undocumented dashboard/RPC endpoint. The vendors have not
+/// sanctioned this use, and any of them can change shape or auth in a routine
+/// release — at which point that agent's reading goes unavailable. Failures
+/// here become a reason string (returned for the Claude probe, logged for the
+/// others). Rendering a per-agent "reading unavailable — format changed"
+/// state instead of a blank, and disclosing this in the tour/Settings copy,
+/// live outside this file (menu + preferences). Keep every reading opt-in.
 actor LiveUsageService {
 
     enum Outcome {
@@ -182,11 +192,21 @@ private enum ClaudeCredential {
         }
     }
 
-    /// Prompt-free source first: the desktop app's own claude process carries
-    /// the OAuth token in env (reading env of the user's own processes is
-    /// local). The CLI keychain item is second — reading it can show a
-    /// one-time macOS keychain prompt. An API key is last: it authenticates
-    /// but usually has no subscription windows.
+    /// Order is deliberate, and the running-process path is a known, bounded
+    /// secret surface we keep on purpose. The running `claude` process carries
+    /// both the OAuth token AND the subscription tier in its environment, so
+    /// it is tried first: it needs no keychain prompt, and it is the only
+    /// source that yields the plan label — the keychain item (below) holds the
+    /// token but not the tier, so preferring it would degrade the menu's
+    /// "pro"/"max" caption to a generic "subscription" (Core falls back to that
+    /// when plan is nil; verified in ClaudeLiveParsing.snapshot). macOS exposes
+    /// no way to read a single environment variable of another process, so
+    /// `runningProcessOAuth` unavoidably reads the whole environment of the
+    /// user's own `claude` processes — but nothing is transmitted, written, or
+    /// retained beyond extracting the two values, and only the user's own
+    /// processes are scanned. The keychain item is the no-env fallback (a
+    /// one-time macOS prompt); an API key is last (authenticates, but usually
+    /// publishes no subscription windows).
     static func resolve() -> (ClaudeCredential, plan: String?)? {
         if let found = runningProcessOAuth() { return (.oauth(found.token), found.plan) }
         if let token = keychainOAuthToken() { return (.oauth(token), nil) }

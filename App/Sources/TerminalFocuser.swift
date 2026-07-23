@@ -1,34 +1,31 @@
 import AppKit
 import AgentBabysitterCore
 
-/// Brings the window owning a session to the front. Desktop-app sessions
-/// activate the Claude app directly; terminal sessions walk the session
-/// process's ancestors until one of them is a real application
-/// (claude → zsh → login → iTerm2); unknown owners fall back to the first
-/// running terminal in preference order.
+/// Brings the app owning a session to the front. Desktop-app sessions activate
+/// the agent's own app directly; terminal sessions walk the session process's
+/// ancestors until one of them is a real application
+/// (claude → zsh → login → iTerm2).
+///
+/// When neither path can tie the session to a running app, `focusSession`
+/// returns `false` and does nothing — it deliberately does NOT front an
+/// arbitrary terminal. A blind "activate the first terminal in a fixed list"
+/// fallback used to send the user to the wrong window (often a terminal that
+/// never ran the session) with no way to tell the app had guessed; degrading
+/// to an honest no-op, and letting the caller say "couldn't locate it", is
+/// strictly better than teleporting the user somewhere unrelated.
+///
+/// Known limitation (not yet addressed): even a successful activate brings the
+/// owning app forward at the application level, not the specific window/tab —
+/// a raise of the exact TTY-owning window would need the Accessibility API or a
+/// scripting bridge, gated on a permission prompt. Tracked as future work.
 @MainActor
 enum TerminalFocuser {
 
     static let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
 
-    /// Preference order for the fallback when no ancestor is an app.
-    static let terminalBundleIDs = [
-        "com.googlecode.iterm2",
-        "com.apple.Terminal",
-        "dev.warp.Warp-Stable",
-        "com.mitchellh.ghostty",
-        "net.kovidgoyal.kitty",
-        "com.github.wez.wezterm",
-        "io.alacritty",
-        "com.microsoft.VSCode",
-        "com.todesktop.230313mzl4w4u92",  // Cursor
-        claudeDesktopBundleID,
-        "com.openai.codex",
-    ]
-
     /// Per-agent desktop apps, tried first for desktop-hosted sessions.
     static let agentBundleIDs: [String: [String]] = [
-        "claude-code": ["com.anthropic.claudefordesktop"],
+        "claude-code": [claudeDesktopBundleID],
         "codex": ["com.openai.codex"],
         "hermes": ["com.nousresearch.hermes", "com.nousresearch.hermes.setup"],
         // OpenClaw ships no macOS .app (CLI-only, like antigravity-cli/gemini-cli),
@@ -40,10 +37,16 @@ enum TerminalFocuser {
         "manus": ["im.manus.desktop"],
     ]
 
-    static func focusSession(_ row: SessionRow) {
+    /// Front the app owning `row`. Returns `true` when a specific owning app was
+    /// found and activated, `false` when the session could not be tied to any
+    /// running app (nothing is fronted). Callers should surface the `false` case
+    /// ("couldn't find that session's window") rather than leave the click
+    /// looking ignored.
+    @discardableResult
+    static func focusSession(_ row: SessionRow) -> Bool {
         if row.isDesktopApp {
             for bundleID in agentBundleIDs[row.agentID] ?? [] where activate(bundleID: bundleID) {
-                return
+                return true
             }
         }
         if let pid = row.pid {
@@ -54,11 +57,15 @@ enum TerminalFocuser {
                 if let app = NSRunningApplication(processIdentifier: ancestor),
                    app.activationPolicy == .regular {
                     app.activate()
-                    return
+                    return true
                 }
             }
         }
-        focusAnyTerminal()
+        // Could not identify the owning app (no desktop match, and either no pid
+        // — a finished session — or its ancestry holds no GUI app). Do NOT front
+        // a random terminal: that guess is wrong more often than right and gives
+        // the user no signal it happened. Report failure and let the caller say so.
+        return false
     }
 
     @discardableResult
@@ -67,11 +74,5 @@ enum TerminalFocuser {
             .first(where: { $0.bundleIdentifier == bundleID }) else { return false }
         app.activate()
         return true
-    }
-
-    private static func focusAnyTerminal() {
-        for bundleID in terminalBundleIDs where activate(bundleID: bundleID) {
-            return
-        }
     }
 }

@@ -65,7 +65,9 @@ public struct SpendGuardPlanner: Equatable, Sendable {
     private var tracks: [String: Track] = [:]
     /// Sessions already nudged in a PREVIOUS launch. The tracks live in memory,
     /// so without this a quit-and-reopen re-fires every nudge the user already
-    /// saw for a still-running session.
+    /// saw for a still-running session. Pruned each `evaluate` to only sessions
+    /// still in the live set (see the `formIntersection` there) so they cannot
+    /// accumulate dead session UUIDs across launches.
     private var restoredBurnFired: Set<String> = []
     private var restoredBudgetFired: Set<String> = []
 
@@ -128,6 +130,16 @@ public struct SpendGuardPlanner: Equatable, Sendable {
             tracks[row.id] = t
         }
         tracks = tracks.filter { seen.contains($0.key) }
+        // Bound the restored sets. A previously-nudged id no longer in the live
+        // set is a session that has aged out of SessionStore's retention window;
+        // ids are unique per run, so it can never return. Without this prune the
+        // restored{Burn,Budget}Fired sets — which the app re-persists to
+        // UserDefaults on every nudging tick — would grow by one 36-char UUID
+        // per nudged session across every launch and never shrink. Tying their
+        // lifetime to `seen` prunes them exactly when the session ages out; a
+        // still-running nudged session stays in `seen`, so it is never re-nudged.
+        restoredBurnFired.formIntersection(seen)
+        restoredBudgetFired.formIntersection(seen)
         return out
     }
 

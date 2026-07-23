@@ -19,8 +19,19 @@ public enum UsageAlertPlanner {
 
     /// One alert per agent per window, both the 5-hour and the weekly.
     /// A reading whose window already reset is stale — never alert on it.
+    ///
+    /// `maxAge` (opt-in; nil disables it — the default, so existing callers keep
+    /// the prior behaviour) skips any reading captured longer than `maxAge` ago:
+    /// a reactive banner off a days-old reading describes a window the user may
+    /// not have touched in days, and the menu already captions such a reading as
+    /// stale, so an un-hedged notification off it would contradict the menu.
+    /// This is the reactive counterpart to the pace planner, which refuses aged
+    /// readings via `UsageForecast.maximumStaleness`; the value is left to the
+    /// caller because a monotonic weekly counter stays substantially true for
+    /// far longer than a 5-hour one, so the right threshold is window-dependent.
     public static func plan(limits: [String: UsageLimitSnapshot],
                             threshold: Double,
+                            maxAge: TimeInterval? = nil,
                             alertedFiveHour: [String: Date],
                             alertedWeekly: [String: Date],
                             now: Date = Date()) -> Outcome {
@@ -29,6 +40,10 @@ public enum UsageAlertPlanner {
         var weekly = alertedWeekly
 
         for (agentID, limit) in limits.sorted(by: { $0.key < $1.key }) {
+            // Both the 5-hour and weekly fields ride this one snapshot, so a
+            // stale capture invalidates both — skip the whole reading. Leaving
+            // the alerted keys untouched means a later fresh reading re-arms.
+            if let maxAge, now.timeIntervalSince(limit.capturedAt) > maxAge { continue }
             if let used = limit.usedPercent, used >= threshold,
                limit.resetsAt.map({ $0 > now }) ?? true {
                 let window = limit.resetsAt ?? bucket(now, seconds: 18_000)
@@ -178,9 +193,14 @@ public enum CostBudgetPlanner {
         public let alertedWeekKey: String?
     }
 
-    /// `todaySpent`/`weekSpent` in USD; `dayKey`/`weekKey` identify the current
-    /// windows (e.g. "2026-07-06" and "2026-W27"); the alerted keys are what
-    /// last fired.
+    /// `todaySpent`/`weekSpent` AND `dailyBudget`/`weeklyBudget` are all in USD.
+    /// This just compares two numbers, so both sides must share a unit: the
+    /// caller takes the budget the user entered in the DISPLAY currency and
+    /// converts it to USD (÷ the USD→display rate) before calling. Passing a
+    /// display-currency budget straight through compares it against USD spend
+    /// and trips the alert at the wrong threshold (~97× off on a currency like
+    /// INR). `dayKey`/`weekKey` identify the current windows (e.g. "2026-07-06"
+    /// and "2026-W27"); the alerted keys are what last fired.
     public static func plan(todaySpent: Double, dailyBudget: Double, dayKey: String,
                             weekSpent: Double, weeklyBudget: Double, weekKey: String,
                             alertedDayKey: String?, alertedWeekKey: String?) -> Outcome {
@@ -203,9 +223,17 @@ public enum CostBudgetPlanner {
 /// of sessions, so history must accumulate outside it).
 public enum DailyCostHistory {
 
-    // ISO8601DateFormatter isn't Sendable; building per call keeps this pure
-    // (it's on a 2s tick at most — negligible).
-    private static func formatter() -> ISO8601DateFormatter {
+    /// A day-key parser ("yyyy-MM-dd" → local-midnight `Date`). Build it ONCE
+    /// per call and reuse it across every entry — never once per entry. The old
+    /// code called this inside the `.filter`/`.compactMap` closures below, so it
+    /// allocated a formatter for every retained day on every refresh tick; that
+    /// showed up as a real, growing frame in the app's CPU profile (its old
+    /// "negligible" comment was wrong — the allocation was inside the loop). It
+    /// is deliberately NOT a shared `static let`: `ISO8601DateFormatter` isn't
+    /// Sendable, and — like `LocalDay` — the timezone must be re-read per call
+    /// so the day boundary follows a live timezone change instead of freezing
+    /// at first use.
+    private static func makeFormatter() -> ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withFullDate]
         formatter.timeZone = .current
@@ -226,14 +254,16 @@ public enum DailyCostHistory {
         let todayKey = key(for: now)
         history[todayKey] = max(history[todayKey] ?? 0, dollars)
         let cutoff = now.addingTimeInterval(-Double(keepDays) * 86_400)
+        let formatter = makeFormatter()
         return history.filter { entry, _ in
-            formatter().date(from: entry).map { $0 > cutoff } ?? false
+            formatter.date(from: entry).map { $0 > cutoff } ?? false
         }
     }
 
     public static func series(_ history: [String: Double]) -> [(day: Date, dollars: Double)] {
-        history
-            .compactMap { key, dollars in formatter().date(from: key).map { ($0, dollars) } }
+        let formatter = makeFormatter()
+        return history
+            .compactMap { key, dollars in formatter.date(from: key).map { ($0, dollars) } }
             .sorted { $0.0 < $1.0 }
     }
 }

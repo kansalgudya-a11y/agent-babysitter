@@ -7,9 +7,19 @@ import Foundation
 /// must still sample off-actor (see SessionStore's probe loop).
 public enum ProcessNetworkSampler {
 
+    /// nettop's first `-l 1` sample lands ~5.05 s after launch (measured
+    /// repeatedly on this machine: 5.06–5.07 s, and independent of `-s`, which
+    /// only spaces *later* samples). The watchdog must clear that or it kills
+    /// nettop before it prints its single data row — which is exactly what a
+    /// 2 s watchdog did, so the signal never fired. 8 s clears the real
+    /// latency with margin while still bounding a genuinely stuck nettop.
+    private static let watchdogSeconds: Double = 8
+
     public static func cumulativeBytes(pid: Int32) -> Int? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
+        // `-l 1` prints one snapshot whose bytes_in/bytes_out are cumulative
+        // since process start, then exits — one sample is all we need.
         process.arguments = ["-P", "-p", String(pid), "-x", "-l", "1"]
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -17,7 +27,10 @@ public enum ProcessNetworkSampler {
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
         let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: watchdog)
+        DispatchQueue.global().asyncAfter(deadline: .now() + watchdogSeconds, execute: watchdog)
+        // Output is one header + one data row (<300 B), far under the pipe
+        // buffer, so a single blocking read to EOF cannot deadlock; it unblocks
+        // when nettop exits (~5 s) or the watchdog terminates it.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         watchdog.cancel()

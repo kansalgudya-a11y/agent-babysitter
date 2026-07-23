@@ -1,9 +1,10 @@
 import Foundation
 
-/// Pure bookkeeping for "what Agent Babysitter caught for you": the discrete
-/// wins it surfaced over time — stalls flagged, waiting pings delivered, spend
-/// suggestions raised, and the dollars sitting on sessions it flagged. This is
-/// the number that tells a user the app is earning its keep.
+/// Pure bookkeeping for "what Agent Babysitter caught for you": three discrete
+/// activity counters surfaced over time — stalls flagged, waiting pings
+/// delivered, and spend nudges made. Each is a plain count of something the app
+/// actually did; none of it is money saved. The app flags runaway spend, it
+/// does not stop it, so there is deliberately no dollar total here to display.
 ///
 /// Unlike `StatsLedger` (whose per-day cost only ever grows, so it max-merges),
 /// impact events are discrete: the app counts each episode once via its own
@@ -14,6 +15,8 @@ public enum ImpactLedger {
         public var stallsCaught: [String: Int]
         public var waitingPings: [String: Int]
         public var suggestions: [String: Int]
+        /// Retained only to decode older on-disk blobs; never populated and never
+        /// displayed. It is NOT a savings figure and stays 0 on every fresh write.
         public var dollarsFlagged: [String: Double]
 
         public init(stallsCaught: [String: Int] = [:],
@@ -30,6 +33,8 @@ public enum ImpactLedger {
     /// Fold today's newly-observed events in (deltas ADD). The app supplies
     /// counts its episode logic already deduped — a stall counted once per
     /// stall episode, a ping once per delivery, a suggestion once per nudge.
+    /// `dollarsFlagged` is retained only for decode compatibility with older
+    /// callers; the app no longer passes it (defaults to 0). NOT a savings figure.
     public static func recorded(_ ledger: Ledger, todayKey: String,
                                 stalls: Int = 0, waits: Int = 0,
                                 suggestions: Int = 0, dollarsFlagged: Double = 0) -> Ledger {
@@ -70,6 +75,8 @@ public enum ImpactLedger {
         public var stalls: Int
         public var waits: Int
         public var suggestions: Int
+        /// Retained for decode/summary compatibility; stays 0 forever because the
+        /// ledger is never fed a dollar delta. It is NOT a savings figure.
         public var dollarsFlagged: Double
 
         public init(stalls: Int = 0, waits: Int = 0, suggestions: Int = 0, dollarsFlagged: Double = 0) {

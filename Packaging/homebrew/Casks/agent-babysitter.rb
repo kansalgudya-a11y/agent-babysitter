@@ -17,11 +17,19 @@ cask "agent-babysitter" do
 
   app "AgentBabysitter.app"
 
+  # This caveat exists ONLY because the DMG is not yet signed and notarized.
+  # Do not reintroduce `--no-quarantine` guidance here: stripping quarantine
+  # is the instruction malware distributors give, it disqualifies the cask
+  # from homebrew-cask proper, and it removes the attribute macOS needs to
+  # revoke a compromised binary later. The real fix is a Developer ID
+  # signature + notarization ticket (see Scripts/make-dmg.sh). Once the DMG
+  # is signed and notarized, delete this whole caveats block — Gatekeeper
+  # verifies the stapled ticket and the first-launch prompt disappears.
   caveats <<~EOS
-    Agent Babysitter is an unsigned beta. To skip the one-time Gatekeeper
-    prompt, install with:
-      brew install --cask --no-quarantine jaylmaao/tap/agent-babysitter
-    Otherwise, allow it once under System Settings > Privacy & Security.
+    Agent Babysitter is an unsigned beta, so macOS Gatekeeper blocks the
+    first launch. To open it: launch it once and dismiss the warning, then
+    open System Settings > Privacy & Security, scroll down, and click
+    "Open Anyway" next to Agent Babysitter. You only have to do this once.
   EOS
 
   zap trash: [

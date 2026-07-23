@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 import AgentBabysitterCore
 
 /// Main-actor view model: owns the store and watchers, republishes their
@@ -33,6 +34,23 @@ final class AppModel: ObservableObject {
     var usageAgents: [(id: String, name: String)] {
         let muted = Set(adapters.filter { !$0.publishesUsageLimit }.map(\.id))
         return installedAgents.filter { !muted.contains($0.id) }
+    }
+    /// Installed agents that CAN raise needs-you / finished / stuck banners —
+    /// they publish turn boundaries. The delivery gate already drops
+    /// activity-based rows (`rows.filter { !$0.isActivityBased }`), so these two
+    /// lists are the honest coverage the Notifications tab shows under the three
+    /// state toggles, derived from the private `adapters` capability flags.
+    var notifiableAgentNames: [String] {
+        let notifiable = Set(adapters.filter { !$0.isActivityBased }.map(\.id))
+        return installedAgents.filter { notifiable.contains($0.id) }.map(\.name)
+    }
+    /// Installed agents that can NEVER produce a lifecycle banner — Cursor,
+    /// Manus, Gemini, Antigravity infer activity from write gaps and expose no
+    /// turn boundaries. Named so the UI can say so instead of leaving a ticked
+    /// toggle that silently never fires for them.
+    var activityOnlyAgentNames: [String] {
+        let activityOnly = Set(adapters.filter { $0.isActivityBased }.map(\.id))
+        return installedAgents.filter { activityOnly.contains($0.id) }.map(\.name)
     }
     /// Agents with a live process right now — their app/CLI is open.
     @Published private(set) var runningAgentIDs: Set<String> = []
@@ -90,8 +108,11 @@ final class AppModel: ObservableObject {
     @Published var paceWeeklyFloor: Double {
         didSet { UserDefaults.standard.set(paceWeeklyFloor, forKey: "paceWeeklyFloor") }
     }
-    /// Warn when today's / this week's estimated spend crosses this many USD.
-    /// 0 = off. Alert fires once per day / week.
+    /// Warn when today's / this week's estimated spend crosses this budget.
+    /// Entered and stored in the DISPLAY currency (the symbol the field shows);
+    /// `deliverBudgetAlerts` converts it to USD via `effectiveRate` before the
+    /// comparison, since spend totals are tracked in USD. 0 = off. Alert fires
+    /// once per day / week.
     @Published var dailyBudget: Double {
         didSet { UserDefaults.standard.set(dailyBudget, forKey: "dailyBudget") }
     }
@@ -255,11 +276,24 @@ final class AppModel: ObservableObject {
     @Published private(set) var hottestLimitPercent: Double?
     @Published var launchAtLogin: Bool {
         didSet {
-            guard oldValue != launchAtLogin else { return }
+            guard oldValue != launchAtLogin, !suppressToggleApply else { return }
             applyLaunchAtLogin()
         }
     }
     @Published private(set) var hooksError: String?
+    /// True when macOS will silently drop every banner we post (the user hit
+    /// "Don't Allow" or switched the app off in System Settings › Notifications).
+    /// Mirrored from `NotificationManager.authorizationStatus`; the menu and the
+    /// Notifications tab render a "notifications are blocked" banner from it.
+    @Published private(set) var notificationsBlocked = false
+    /// Why the last "Start at login" toggle failed, or an approval hint when the
+    /// system parks the item in .requiresApproval — surfaced under the toggle
+    /// the way `liveUsageStatus` is, instead of the switch silently flipping back.
+    @Published private(set) var launchAtLoginStatus: String?
+    /// Set true only while a toggle's own error handler reverts its value, so the
+    /// re-entrant didSet doesn't re-run apply…() (which would wipe the error we
+    /// just set, or bounce the login-item registration a second time).
+    private var suppressToggleApply = false
     @Published private(set) var welcomeDismissed: Bool =
         UserDefaults.standard.bool(forKey: "welcomeDismissed")
     /// The guide version floor at launch: tips newer than this get NEW
@@ -373,6 +407,14 @@ final class AppModel: ObservableObject {
                                      "waitingReminderMinutes": 10.0,
                                      "spendGuardEnabled": true,
                                      "spendGuardBudget": 25.0,
+                                     // A documented always-on safety net (the toggle's
+                                     // help promises it fires): register it true so a
+                                     // fresh install isn't silently missing the one
+                                     // follow-up that keeps a blocked agent from sitting
+                                     // unnoticed. Unlike precision/usage-meter/live-usage,
+                                     // this makes no network call and changes no external
+                                     // config, so on-by-default is the honest default.
+                                     "waitingReminderEnabled": true,
                                      "doneAutoHideMinutes": 10.0])
         let root = PlatformPaths.homeDirectory(".claude/projects")
         projectsRoot = root
@@ -402,7 +444,11 @@ final class AppModel: ObservableObject {
         waitingReminderMinutes = defaults.double(forKey: "waitingReminderMinutes")
         spendGuardEnabled = defaults.bool(forKey: "spendGuardEnabled")
         spendGuardBudget = defaults.double(forKey: "spendGuardBudget")
-        if let data = defaults.data(forKey: "impactLedger"),
+        // Skip the real on-disk ledger under the snapshot harness so QA renders
+        // are hermetic: fixtures inject their own impact via applyFixture, and a
+        // render must never carry this machine's private spend/activity figures.
+        if !Self.isSnapshotMode,
+           let data = defaults.data(forKey: "impactLedger"),
            let l = try? JSONDecoder().decode(ImpactLedger.Ledger.self, from: data) {
             impactLedger = l
         }
@@ -457,7 +503,20 @@ final class AppModel: ObservableObject {
         notificationManager.money = { [weak self] in self?.money($0) ?? String(format: "~$%.2f", $0) }
         hotKeyManager.target = { [weak self] in self?.neediestRow() }
         applyHotKey()
+        // Mirror the system's notification permission into `notificationsBlocked`
+        // before priming, so the "blocked" banner is right from the first tick
+        // and delivery is gated off (see refresh()) when macOS would drop banners.
+        notificationManager.onAuthorizationChange = { [weak self] status in
+            self?.notificationsBlocked = (status == .denied)
+        }
         notificationManager.primeAuthorization()
+        Task { await notificationManager.refreshAuthorizationStatus() }
+        // A change made in System Settings › Notifications while we were in the
+        // background flips the banner on next foreground without a relaunch.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.notificationManager.refreshAuthorizationStatus() }
+        }
         start()
         if precision { applyPrecisionMode() }
         if claudeUsageMeterEnabled { applyClaudeUsageMeter() }
@@ -467,7 +526,14 @@ final class AppModel: ObservableObject {
         loadSessionHistory()
     }
 
-    private var notifiedUnreadable: Set<String> = []
+    /// "Can't read <agent>" fired banners, keyed `agentID@appVersion` and
+    /// persisted, so a permanently-unreadable agent re-fires once per app
+    /// VERSION (i.e. when a parser update might have fixed it) instead of once
+    /// per launch. Re-armed for a fresh fire if the agent heals then breaks again.
+    private var notifiedUnreadable: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "notifiedUnreadable") ?? [])
+    private static let appVersion =
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     private let currencyRateService = CurrencyRateService()
     private var cachedCurrencyRate: CurrencyRateService.CachedRate?
     private var currencyRateTimer: Timer?
@@ -561,6 +627,7 @@ final class AppModel: ObservableObject {
                       welcomeDismissed: Bool = true,
                       processDetectionDegraded: Bool = false,
                       statsDays: [DayStat] = [],
+                      impactThisMonth: ImpactLedger.Summary = ImpactLedger.Summary(),
                       currency: (code: String, rate: Double)? = nil) {
         if let currency {
             self.currencyCode = currency.code
@@ -582,6 +649,7 @@ final class AppModel: ObservableObject {
         self.welcomeDismissed = welcomeDismissed
         self.processDetectionDegraded = processDetectionDegraded
         self.statsDays = statsDays
+        self.impactThisMonth = impactThisMonth
     }
 
     /// Poll live usage on a slow cadence while enabled. Each probe costs one
@@ -715,7 +783,11 @@ final class AppModel: ObservableObject {
     private func adaptRefreshCadence() {
         if !rows.isEmpty { lastRowsSeenAt = Date() }
         let quiet = rows.isEmpty && Date().timeIntervalSince(lastRowsSeenAt) > 120
-        let desired: TimeInterval = quiet ? 30 : 2
+        // Back off harder in Low Power Mode — the user reached for that switch
+        // precisely to stop background drain. Agents still refresh, just less
+        // often; only lengthens the interval, never shortens it.
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let desired: TimeInterval = quiet ? (lowPower ? 60 : 30) : (lowPower ? 5 : 2)
         if desired != refreshInterval {
             scheduleRefreshTimer(interval: desired)
             let watcher = processWatcher
@@ -731,10 +803,7 @@ final class AppModel: ObservableObject {
         let watcher = FSEventsWatcher(
             url: root,
             onChange: { [weak self] paths in
-                Task {
-                    await store.transcriptsChanged(paths: paths)
-                    await self?.refresh()
-                }
+                Task { @MainActor in self?.transcriptsChangedDebounced(paths) }
             },
             onNeedsRescan: { [weak self] in
                 Task {
@@ -745,6 +814,30 @@ final class AppModel: ObservableObject {
         watcher.start()
         fsWatchers.append(watcher)
         watchedRoots.insert(root)
+    }
+
+    private var fsCoalesceTask: Task<Void, Never>?
+    private var fsPendingPaths: Set<String> = []
+
+    /// While an agent streams its transcript, FSEvents can fire many times a
+    /// second. Each fire used to drive a full `store.transcriptsChanged` + row
+    /// rebuild + refresh, so the advertised idle backoff never engaged whenever
+    /// anything was writing — the app was busiest exactly when the laptop already
+    /// was. Coalesce a burst into ONE store update + refresh per ~0.4s window
+    /// (paths deduped); the timer cadence still covers steady state, and the
+    /// popover open path refreshes immediately on its own.
+    private func transcriptsChangedDebounced(_ paths: [String]) {
+        fsPendingPaths.formUnion(paths)
+        guard fsCoalesceTask == nil else { return }
+        fsCoalesceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self else { return }
+            let batch = Array(self.fsPendingPaths)
+            self.fsPendingPaths.removeAll()
+            self.fsCoalesceTask = nil
+            await self.store.transcriptsChanged(paths: batch)
+            await self.refresh()
+        }
     }
 
     /// Pick up agents installed after launch: when a known root appears,
@@ -788,7 +881,18 @@ final class AppModel: ObservableObject {
         recomputeStatsHistoryIfNeeded()   // one-shot; guarded by a version key
         adoptNewlyInstalledAgents()
         let rows = await store.rows()
-        let summary = await store.menuBarSummary()
+        // The planner and EVERY delivery path see UNFILTERED state. With "Hide
+        // finished sessions: Immediately" (doneAutoHide == 0) a finished row is
+        // filtered out of `rows` before its .done edge is ever observed, so the
+        // finished notification would never fire; feeding unfiltered rows fixes
+        // that. `rows` (filtered) still drives the display, the menu count,
+        // departed/history and stats — a hidden .done row must not inflate them.
+        let plannerRows = await store.rows(includeHidden: true)
+        // Summary from the rows we already hold — no second full rows() pass
+        // (which re-reconciles disk and re-copies every session's cost each
+        // tick, doubling the store's steady-state cost). Derived from FILTERED
+        // rows so a hidden .done session can't inflate the active count.
+        let summary = store.menuBarSummary(from: rows)
         let degraded = await store.isProcessDetectionDegraded
         let todayCost = await store.todayCost()
         var usageLimits = await store.usageLimits()
@@ -802,22 +906,41 @@ final class AppModel: ObservableObject {
         if liveCaptured.count != capturedUsage.count { capturedUsage = liveCaptured }
         usageLimits = UsageLimitLayering.merged(base: usageLimits,
                                                 overlays: [liveCaptured, liveUsage])
+        // Clear a session's banner AND any pending snooze re-delivery both when
+        // the row DEPARTS and when it merely LEAVES the waiting state (answered
+        // in place) — otherwise a snoozed "needs your input" fires for a turn
+        // that has already completed. `departed` is still off the filtered rows.
+        let prevWaiting = Set(self.rows.filter { $0.state == .waitingForInput }.map(\.id))
+        let nowWaiting = Set(plannerRows.filter { $0.state == .waitingForInput }.map(\.id))
         let departed = Set(self.rows.map(\.id)).subtracting(rows.map(\.id))
         if !departed.isEmpty {
-            notificationManager.removeDelivered(sessionIDs: Array(departed))
             recordHistory(for: self.rows.filter { departed.contains($0.id) })
         }
-        self.rows = rows
-        self.usageLimits = usageLimits
-        self.runningAgentIDs = await store.runningAgentIDs()
+        let toCancel = departed.union(prevWaiting.subtracting(nowWaiting))
+        if !toCancel.isEmpty {
+            notificationManager.cancelNotifications(sessionIDs: Array(toCancel))
+        }
+        // Assign @Published state only when it actually changed: an unconditional
+        // assign fires objectWillChange every tick and re-renders the whole menu,
+        // a direct contributor to the idle CPU burn.
+        if self.rows != rows { self.rows = rows }
+        if self.usageLimits != usageLimits { self.usageLimits = usageLimits }
+        let running = await store.runningAgentIDs()
+        if self.runningAgentIDs != running { self.runningAgentIDs = running }
         // "Installed" = the app bundle is registered or the CLI is on PATH.
         // A live/running agent always counts too, so an actual session can
         // never be hidden by a detection miss. Uninstalled apps never appear.
         let installedIDs = AgentInstallDetector.installedIDs(among: adapters)
             .union(runningAgentIDs)
-        self.installedAgents = adapters
+        let newInstalled = adapters
             .filter { installedIDs.contains($0.id) }
             .map { (id: $0.id, name: $0.displayName) }
+        // `[(id:,name:)]` isn't Equatable; compare a flattened key list so the
+        // publisher fires only when the installed set or a display name changed.
+        if newInstalled.map({ "\($0.id)\t\($0.name)" })
+            != installedAgents.map({ "\($0.id)\t\($0.name)" }) {
+            self.installedAgents = newInstalled
+        }
         // Mirror for support/debugging - written only when changed; the 2s
         // tick must not churn plists all day.
         let debugLimits = usageLimits.mapValues {
@@ -839,37 +962,82 @@ final class AppModel: ObservableObject {
             lastDebugAgents = debugAgents
             UserDefaults.standard.set(debugAgents, forKey: "debugAgents")
         }
-        self.unreadableAgents = await computeUnreadableAgents()
+        let unreadable = await computeUnreadableAgents()
+        if self.unreadableAgents != unreadable { self.unreadableAgents = unreadable }
         recordCostHistory(todayCost.dollars)
         await recordStats(rows: rows)
         adaptRefreshCadence()
-        self.summary = summary
-        self.processDetectionDegraded = degraded
-        self.todayCost = todayCost
+        if self.summary != summary { self.summary = summary }
+        if self.processDetectionDegraded != degraded { self.processDetectionDegraded = degraded }
+        if self.todayCost != todayCost { self.todayCost = todayCost }
+
+        // The weekly digest is only ever "due" Sunday 18:00–23:59. If the user's
+        // quiet hours cover that window it would be dropped forever; record the
+        // Sunday's week key AND the timestamp so `deliverWeeklyDigestIfDue` can
+        // catch up on the first non-quiet tick — even one that has rolled into
+        // Monday, which is already the NEXT ISO week (so a week-key match alone
+        // would miss it). Keyed only on delivery, so it still fires at most once.
+        if weeklyDigestEnabled, !notificationsMuted, isQuietNow,
+           WeeklyDigest.isDue(now: Date(),
+                              lastFired: UserDefaults.standard.string(forKey: "weeklyDigestFired")) {
+            let d = UserDefaults.standard
+            d.set(WeeklyDigest.weekKey(for: Date()), forKey: "weeklyDigestPending")
+            d.set(Date().timeIntervalSince1970, forKey: "weeklyDigestPendingAt")
+        }
 
         // Quiet hours silence every banner (the menu still updates live).
         guard !isQuietNow else { return }
+        // If macOS will silently drop everything we post (the user hit "Don't
+        // Allow" or turned the app off in System Settings › Notifications),
+        // deliver nothing AND advance NO dedupe bookkeeping below — otherwise the
+        // 85%-of-limit warning and this week's digest are burned for good and
+        // never re-offered once permission returns.
+        guard notificationManager.canDeliver else { return }
         deliverLimitAlerts(usageLimits)
         deliverBudgetAlerts(todayCost.dollars)
         deliverWeeklyDigestIfDue()
-        for agent in unreadableAgents where notifiedUnreadable.insert(agent.id).inserted {
-            notificationManager.deliverCannotRead(agentName: agent.name, agentID: agent.id)
+        // "Can't read <agent>" fires once per app VERSION (when a parser update
+        // might have fixed it), not once per launch. Keys are `agentID@version`,
+        // persisted, and re-armed to exactly the still-unreadable set so an agent
+        // that heals then breaks again fires afresh.
+        var unreadableChanged = false
+        for agent in unreadableAgents {
+            if notifiedUnreadable.insert("\(agent.id)@\(Self.appVersion)").inserted {
+                notificationManager.deliverCannotRead(agentName: agent.name, agentID: agent.id)
+                unreadableChanged = true
+            }
         }
-        notifiedUnreadable.formIntersection(unreadableAgents.map(\.id))  // re-arm once healthy
+        let liveUnreadableKeys = Set(unreadableAgents.map { "\($0.id)@\(Self.appVersion)" })
+        if notifiedUnreadable != liveUnreadableKeys {
+            notifiedUnreadable = liveUnreadableKeys
+            unreadableChanged = true
+        }
+        if unreadableChanged {
+            UserDefaults.standard.set(Array(notifiedUnreadable), forKey: "notifiedUnreadable")
+        }
 
-        // Activity-based agents (Antigravity) infer turn ends from write
-        // gaps; a long think would flap Done/Working and spam notifications.
-        let notifiableRows = rows.filter { !$0.isActivityBased }
-        let events = notificationPlanner.events(for: rows)
-            .filter { event in notifiableRows.contains { $0.id == event.sessionID } }
-        var enabledKinds: Set<NotificationEvent.Kind> = []
-        if notifyWaiting { enabledKinds.insert(.waitingForInput) }
-        if notifyDone { enabledKinds.insert(.turnCompleted) }
-        if notifyStalled { enabledKinds.insert(.stalled) }
-        notificationManager.deliver(events, rows: rows,
-                                    muted: notificationsMuted,
-                                    enabledKinds: enabledKinds,
-                                    stallThresholdMinutes: Int(stallThresholdMinutes))
+        // Activity-based agents (Antigravity/Cursor/Manus/Gemini) infer turn
+        // ends from write gaps; a long think would flap Done/Working and spam
+        // notifications — they never notify. Plan over UNFILTERED rows so a
+        // finished-then-immediately-hidden session's .done edge is still seen.
+        // Muting pauses the planner ENTIRELY (the events(for:) call is skipped,
+        // not just its delivery) so a state change during a two-minute mute is
+        // preserved and announced on unmute — matching the waiting-reminder and
+        // spend-guard behaviour, instead of being silently swallowed.
+        var events: [NotificationEvent] = []
+        if !notificationsMuted {
+            let notifiableRows = plannerRows.filter { !$0.isActivityBased }
+            events = notificationPlanner.events(for: plannerRows)
+                .filter { event in notifiableRows.contains { $0.id == event.sessionID } }
+            var enabledKinds: Set<NotificationEvent.Kind> = []
+            if notifyWaiting { enabledKinds.insert(.waitingForInput) }
+            if notifyDone { enabledKinds.insert(.turnCompleted) }
+            if notifyStalled { enabledKinds.insert(.stalled) }
+            notificationManager.deliver(events, rows: plannerRows,
+                                        muted: notificationsMuted,
+                                        enabledKinds: enabledKinds,
+                                        stallThresholdMinutes: Int(stallThresholdMinutes))
+        }
 
         // Opt-in follow-up for waiting sessions the user missed. While muted
         // (or in quiet hours, which returns above) the planner is paused; a
@@ -877,9 +1045,9 @@ final class AppModel: ObservableObject {
         // reminds right away — you asked to be caught up.
         if waitingReminderEnabled, !notificationsMuted {
             let due = waitingReminderPlanner.dueReminders(
-                rows: rows, interval: waitingReminderMinutes * 60)
+                rows: plannerRows, interval: waitingReminderMinutes * 60)
             for id in due {
-                guard let row = rows.first(where: { $0.id == id }) else { continue }
+                guard let row = plannerRows.first(where: { $0.id == id }) else { continue }
                 notificationManager.deliverWaitingReminder(
                     row: row, minutes: Int(waitingReminderMinutes))
             }
@@ -890,16 +1058,13 @@ final class AppModel: ObservableObject {
         // consumed by the planner's once-per-episode flag; a still-fast session
         // nudges once banners resume.
         var newSuggestions = 0
-        var dollarsFlagged = 0.0
         if spendGuardEnabled, !notificationsMuted {
             let suggestions = spendGuardPlanner.evaluate(
-                rows: rows,
+                rows: plannerRows,
                 config: SpendGuardPlanner.Config(sessionBudget: max(1, spendGuardBudget)))
-            var flaggedSessions: Set<String> = []   // a session counts once even if both kinds fire
             for s in suggestions {
                 notificationManager.deliverSpendSuggestion(s)
                 newSuggestions += 1
-                if flaggedSessions.insert(s.id).inserted { dollarsFlagged += s.dollars }
             }
             // Remember which sessions were nudged so quitting and reopening
             // doesn't repeat every nudge for a session that's still running.
@@ -910,17 +1075,22 @@ final class AppModel: ObservableObject {
             }
         }
 
-        // Record only what we actually surfaced: stall/wait edges for the
-        // categories still enabled and not muted (quiet hours already returned
-        // above), plus the spend nudges delivered this tick.
+        // Record only what we actually surfaced: the three honest, episode-
+        // deduped activity counters — stall/wait edges for the categories still
+        // enabled and not muted (quiet hours already returned above), plus the
+        // spend nudges delivered this tick. Deliberately NO dollar figure: the
+        // app never saved that money, and the old per-tick "flagged" total
+        // re-added each nudged session's running total every tick, inflating it
+        // 20–96×. `dollarsFlagged` is omitted (defaults to 0 in Core, kept only
+        // for on-disk decode compatibility) and never displayed.
         let delivering = !notificationsMuted
         let newStalls = (delivering && notifyStalled) ? events.filter { $0.kind == .stalled }.count : 0
         let newWaits = (delivering && notifyWaiting) ? events.filter { $0.kind == .waitingForInput }.count : 0
-        if newStalls > 0 || newWaits > 0 || newSuggestions > 0 || dollarsFlagged > 0 {
+        if newStalls > 0 || newWaits > 0 || newSuggestions > 0 {
             impactLedger = ImpactLedger.recorded(
                 impactLedger, todayKey: DailyCostHistory.key(for: Date()),
                 stalls: newStalls, waits: newWaits,
-                suggestions: newSuggestions, dollarsFlagged: dollarsFlagged)
+                suggestions: newSuggestions)
             persistImpact()
         }
     }
@@ -963,16 +1133,22 @@ final class AppModel: ObservableObject {
         // Bookkeeping every 30s is plenty; the charts show days.
         let now = Date()
         let anyWorking = rows.contains { $0.state == .working }
+        // A backward clock jump (NTP correction, manual change, DST fall-back)
+        // makes timeIntervalSince negative — which would freeze the 30s guard
+        // indefinitely and credit negative active-minutes. Treat now < lastTick
+        // as "due now" and clamp the credit to ≥ 0.
+        if now < lastStatsTick { lastStatsTick = .distantPast }
+        if now < lastActiveCredit { lastActiveCredit = now }
         guard now.timeIntervalSince(lastStatsTick) >= 30 || statsDays.isEmpty else { return }
-        let sinceCredit = now.timeIntervalSince(lastActiveCredit)
+        let sinceCredit = max(0, now.timeIntervalSince(lastActiveCredit))
         lastStatsTick = now
         lastActiveCredit = now
 
         let defaults = UserDefaults.standard
         let today = DailyCostHistory.key(for: now)
 
-        var byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
-        var byProject = defaults.dictionary(forKey: "costByProject") as? [String: [String: Double]] ?? [:]
+        let byAgent = defaults.dictionary(forKey: "costByAgent") as? [String: [String: Double]] ?? [:]
+        let byProject = defaults.dictionary(forKey: "costByProject") as? [String: [String: Double]] ?? [:]
         let byModel = defaults.dictionary(forKey: "costByModel") as? [String: [String: Double]] ?? [:]
         var counts = defaults.dictionary(forKey: "sessionCounts") as? [String: Int] ?? [:]
         if let legacy = defaults.dictionary(forKey: "sessionsSeen") as? [String: [String]] {
@@ -985,7 +1161,7 @@ final class AppModel: ObservableObject {
         let countedIDs = Set(defaults.stringArray(forKey: "countedSessionIDs")
             ?? (defaults.dictionary(forKey: "sessionsSeenToday") as? [String: [String]])?
                 .values.flatMap { $0 } ?? [])
-        var activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
+        let activeMinutes = defaults.dictionary(forKey: "activeMinutes") as? [String: Double] ?? [:]
 
         // One consistent snapshot of today's breakdowns (not three racing calls).
         let breakdown = await store.todayBreakdown()
@@ -1058,16 +1234,34 @@ final class AppModel: ObservableObject {
     /// Sunday from 6 PM local, once per ISO week: the week's cost, session
     /// count, and busiest project — from the same ledger the stats window
     /// shows. Quiet hours hold it (caller returns before us); the key is
-    /// only recorded on delivery, so a held digest fires later that evening.
+    /// only recorded on delivery. If quiet hours cover the whole Sunday-evening
+    /// due window, refresh() records `weeklyDigestPending` for the week, and
+    /// this delivers it as a CATCH-UP on the first non-quiet tick still inside
+    /// that same ISO week — so a "6 PM–8 AM" quiet setting no longer swallows
+    /// the digest permanently.
     private func deliverWeeklyDigestIfDue() {
         guard weeklyDigestEnabled, !notificationsMuted,
               let ledger = latestDisplayLedger else { return }
         let defaults = UserDefaults.standard
-        guard WeeklyDigest.isDue(now: Date(),
-                                 lastFired: defaults.string(forKey: "weeklyDigestFired"))
-        else { return }
-        let digest = WeeklyDigest.compute(ledger: ledger)
-        defaults.set(WeeklyDigest.weekKey(for: Date()), forKey: "weeklyDigestFired")
+        let now = Date()
+        let fired = defaults.string(forKey: "weeklyDigestFired")
+        let isDue = WeeklyDigest.isDue(now: now, lastFired: fired)
+        // Catch-up for a digest held by quiet hours: refresh() recorded the
+        // Sunday week key + time in weeklyDigestPending. Deliver on the first
+        // non-quiet tick within ~36h (covers a "6 PM–8 AM" window that pushes
+        // delivery into Monday — a new ISO week), keyed to the SUNDAY's week so
+        // it can't double-fire, and computed AS OF that Sunday so the 7-day
+        // window is the one the user expects.
+        let pending = defaults.string(forKey: "weeklyDigestPending")
+        let pendingAt = defaults.object(forKey: "weeklyDigestPendingAt") as? Double ?? 0
+        let catchingUp = pending != nil && pending != fired
+            && now.timeIntervalSince1970 - pendingAt < 36 * 3600
+        guard isDue || catchingUp else { return }
+        let asOf = (catchingUp && !isDue) ? Date(timeIntervalSince1970: pendingAt) : now
+        let digest = WeeklyDigest.compute(ledger: ledger, now: asOf)
+        defaults.set(pending ?? WeeklyDigest.weekKey(for: now), forKey: "weeklyDigestFired")
+        defaults.removeObject(forKey: "weeklyDigestPending")
+        defaults.removeObject(forKey: "weeklyDigestPendingAt")
         notificationManager.deliverWeeklyDigest(
             dollars: digest.dollars, sessions: digest.sessions,
             busiestProject: digest.busiestProject,
@@ -1115,6 +1309,7 @@ final class AppModel: ObservableObject {
         defaults.set(byAgent, forKey: "costByAgent")
         defaults.set(byProject, forKey: "costByProject")
         defaults.set(byModel, forKey: "costByModel")
+        costHistoryCache = history   // keep the recordCostHistory mirror in sync
         costHistory = DailyCostHistory.series(history)
         rebuildSparkline()
         lastStatsTick = .distantPast   // let the next tick rebuild statsDays
@@ -1122,10 +1317,18 @@ final class AppModel: ObservableObject {
             "recomputed \(totals.dayTotals.count, privacy: .public) days of cost history")
     }
 
+    /// In-memory mirror of the persisted "costHistory" dict so the 2s refresh
+    /// tick doesn't decode the whole (up to 10-year) history out of UserDefaults
+    /// every time. Write-through on change; `applyRecomputedStats` — the only
+    /// other writer of that key — keeps it in sync too.
+    private var costHistoryCache: [String: Double]?
+
     private func recordCostHistory(_ todayDollars: Double) {
-        let saved = UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        let saved = costHistoryCache
+            ?? (UserDefaults.standard.dictionary(forKey: "costHistory") as? [String: Double] ?? [:])
         let updated = DailyCostHistory.updated(saved, now: Date(), dollars: todayDollars,
                                                keepDays: 3650)
+        costHistoryCache = updated
         guard updated != saved else { return }
         UserDefaults.standard.set(updated, forKey: "costHistory")
         costHistory = DailyCostHistory.series(updated)
@@ -1134,19 +1337,31 @@ final class AppModel: ObservableObject {
     /// Warn once per day/week when spend crosses the user's budget. Week total
     /// is the last 7 local days of the persisted cost history.
     private func deliverBudgetAlerts(_ todayDollars: Double) {
+        // 0 means "off" regardless of currency, so gate on the raw entered values.
         guard dailyBudget > 0 || weeklyBudget > 0 else { return }
         let defaults = UserDefaults.standard
         let now = Date()
         let history = defaults.dictionary(forKey: "costHistory") as? [String: Double] ?? [:]
+        // Walk real calendar days, not fixed 86,400s steps — a DST fall-back day
+        // is 25h, so multiplying seconds lands twice on the same key (double-
+        // counting today) and skips a day. `date(byAdding:)` is DST-correct.
+        let cal = Calendar.current
         var weekSpent = todayDollars
         for offset in 1..<7 {
-            let key = DailyCostHistory.key(for: now.addingTimeInterval(Double(-offset) * 86_400))
-            weekSpent += history[key] ?? 0
+            guard let day = cal.date(byAdding: .day, value: -offset, to: now) else { continue }
+            weekSpent += history[DailyCostHistory.key(for: day)] ?? 0
         }
+        // Budgets are entered/stored in the DISPLAY currency; spend totals are
+        // USD. Convert the budget to USD so the comparison is apples-to-apples
+        // (on INR, a ₹2000 budget was being compared as $2000 — ~97× too high).
+        // CostBudgetPlanner is unchanged; only the units handed to it are fixed.
+        let rate = effectiveRate > 0 ? effectiveRate : 1
+        let dailyBudgetUSD = dailyBudget / rate
+        let weeklyBudgetUSD = weeklyBudget / rate
         let outcome = CostBudgetPlanner.plan(
-            todaySpent: todayDollars, dailyBudget: dailyBudget,
+            todaySpent: todayDollars, dailyBudget: dailyBudgetUSD,
             dayKey: DailyCostHistory.key(for: now),
-            weekSpent: weekSpent, weeklyBudget: weeklyBudget,
+            weekSpent: weekSpent, weeklyBudget: weeklyBudgetUSD,
             weekKey: Self.isoWeekKey(now),
             alertedDayKey: defaults.string(forKey: "alertedCostDay"),
             alertedWeekKey: defaults.string(forKey: "alertedCostWeek"))
@@ -1189,7 +1404,13 @@ final class AppModel: ObservableObject {
         guard history != sessionHistory else { return }
         sessionHistory = history
         if let data = try? JSONEncoder().encode(history) {
-            try? data.write(to: Self.historyFileURL)
+            // .atomic: a torn write (crash / power loss / full disk) must not
+            // erase the user's entire history — the app's only durable record.
+            // 0600: this holds 500 verbatim prompts, cwds and transcript paths;
+            // harden it like HookEventWatcher does its log, not world-readable.
+            try? data.write(to: Self.historyFileURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: Self.historyFileURL.path)
         }
     }
 
@@ -1380,19 +1601,28 @@ final class AppModel: ObservableObject {
     }
 
     private func applyPrecisionMode() {
-        hooksError = nil
+        // The failure paths below revert the toggle, which fires the didSet and
+        // re-enters here. Bail on that re-entry so we don't wipe the error we
+        // just set (the whole point of the revert was to SHOW it).
+        guard !suppressToggleApply else { return }
         if precisionModeEnabled {
             do {
                 try HooksInstaller.install()
+                hooksError = nil
                 startHookWatcher()
             } catch {
                 hooksError = error.localizedDescription
-                precisionModeEnabled = false
+                suppressToggleApply = true
+                precisionModeEnabled = false   // reverts the switch without wiping hooksError
+                suppressToggleApply = false
+                stopHookWatcherIfUnused()
+                applyStoreConfiguration()
                 return
             }
         } else {
             do {
                 try HooksInstaller.uninstall()
+                hooksError = nil
             } catch {
                 hooksError = error.localizedDescription
             }
@@ -1407,18 +1637,27 @@ final class AppModel: ObservableObject {
     /// a status line, so terminal sessions are the only local source — the %
     /// is account-wide, so one terminal session covers desktop usage too.
     private func applyClaudeUsageMeter() {
-        hooksError = nil
+        // See applyPrecisionMode: the revert re-enters via didSet; skip it so the
+        // install error stays visible instead of being reset to nil.
+        guard !suppressToggleApply else { return }
         if claudeUsageMeterEnabled {
             do {
                 try StatusLineInstaller.install()
+                hooksError = nil
                 startHookWatcher()
             } catch {
                 hooksError = error.localizedDescription
-                claudeUsageMeterEnabled = false
+                suppressToggleApply = true
+                claudeUsageMeterEnabled = false   // reverts without wiping hooksError
+                suppressToggleApply = false
+                capturedUsage = [:]
+                stopHookWatcherIfUnused()
+                Task { await refresh() }
             }
         } else {
             do {
                 try StatusLineInstaller.uninstall()
+                hooksError = nil
             } catch {
                 hooksError = error.localizedDescription
             }
@@ -1479,8 +1718,32 @@ final class AppModel: ObservableObject {
             } else {
                 try SMAppService.mainApp.unregister()
             }
+            // Registration can succeed yet park the item pending user approval
+            // (managed Macs, a prior "don't allow"). Say so instead of looking on.
+            launchAtLoginStatus = SMAppService.mainApp.status == .requiresApproval
+                ? "Approve Agent Babysitter under System Settings › General › Login Items to start it at login."
+                : nil
         } catch {
+            // Surface the failure the way liveUsageStatus is surfaced, rather than
+            // letting the switch silently flip back with no explanation. Revert
+            // under suppression so this doesn't re-enter and clobber the message.
+            suppressToggleApply = true
             launchAtLogin = SMAppService.mainApp.status == .enabled
+            suppressToggleApply = false
+            launchAtLoginStatus = "Couldn't change Start at login: \(error.localizedDescription)"
         }
+    }
+
+    /// Remove the Claude Code hooks and status-line helper this app installed,
+    /// then quit — so trying the app is fully reversible without hand-editing
+    /// ~/.claude/settings.json. Wire this to a "Quit and clean up" menu item;
+    /// plain Quit intentionally leaves the hooks so the feature survives a
+    /// restart. (Cross-file: the menu item lives in the app/menu layer, and a
+    /// `--uninstall-hooks` CLI flag + the cask's `zap` stanza are the other
+    /// halves of the full uninstall story.)
+    func quitAndCleanUp() {
+        try? HooksInstaller.uninstall()
+        try? StatusLineInstaller.uninstall()
+        NSApplication.shared.terminate(nil)
     }
 }

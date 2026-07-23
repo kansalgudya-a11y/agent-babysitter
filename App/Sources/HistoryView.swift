@@ -3,10 +3,14 @@ import AppKit
 import AgentBabysitterCore
 
 /// "What did I run?" — the durable log of finished sessions the live menu
-/// tidies away. Grouped by local day, newest first; each row can reopen its
-/// transcript. Read-only history built from the agents' own files.
+/// tidies away. Grouped by local day, newest first; each row can reveal its
+/// transcript in Finder. Read-only history built from the agents' own files.
 struct HistoryView: View {
     @ObservedObject var model: AppModel
+    /// Transcript files found to be gone the moment the user clicked "Reveal in
+    /// Finder" — so we show an honest "no longer on disk" note in place of a
+    /// button that would otherwise silently do nothing on a pruned transcript.
+    @State private var missingTranscripts: Set<String> = []
 
     private var groups: [(day: Date, entries: [SessionHistoryEntry])] {
         let cal = Calendar.current
@@ -67,37 +71,57 @@ struct HistoryView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                // No false "0 tok": show dollars when priced, else the token split
-                // when we persisted it, else the legacy single figure, else an
-                // em-dash — never abbreviatedCount(0) rendered as "0".
-                Text(historyAmount(entry))
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                // No false "0 tok" and no wall of em-dashes: show a real figure
+                // when we have one, an honest "no token data" for activity-based
+                // agents that record none, and nothing at all when the cost is
+                // genuinely unknown. A blank reads as "unknown"; a column of
+                // identical "—" read as a broken table (verified finding: on real
+                // data 79% of rows had no cost, so the dash was the dominant mark).
+                if let amount = historyAmount(entry) {
+                    Text(amount)
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
                 if entry.dollars > 0, entry.cost.hasTokens {
                     Text(entry.cost.tokenBreakdown)
                         .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                         .lineLimit(1).truncationMode(.tail)
                 }
                 if let path = entry.transcriptPath, !path.isEmpty {
-                    Button("Open transcript") {
-                        NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                    if missingTranscripts.contains(entry.id) {
+                        // The button only ever revealed the file in Finder; once the
+                        // agent has pruned the transcript there is nothing to reveal,
+                        // so say so rather than let the click do nothing.
+                        Text("Transcript no longer on disk")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    } else {
+                        Button("Reveal in Finder") {
+                            if FileManager.default.fileExists(atPath: path) {
+                                NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+                            } else {
+                                missingTranscripts.insert(entry.id)
+                            }
+                        }
+                        .buttonStyle(.link).font(.caption2)
                     }
-                    .buttonStyle(.link).font(.caption2)
                 }
             }
         }
         .padding(.vertical, 2)
     }
 
-    /// The trailing amount: dollars when priced, the token split when it was
-    /// persisted, the legacy single figure for old entries, else an em-dash.
-    private func historyAmount(_ entry: SessionHistoryEntry) -> String {
+    /// The trailing amount, or nil when there is no honest figure to show:
+    /// dollars when priced, the token split when it was persisted, the legacy
+    /// single figure for old entries, an explicit "no token data" for
+    /// activity-based agents that record none, and nil (render nothing) when the
+    /// cost is simply unknown — so the column never becomes a wall of em-dashes.
+    private func historyAmount(_ entry: SessionHistoryEntry) -> String? {
         if entry.dollars > 0 { return model.money(entry.dollars) }
         if entry.cost.hasTokens { return entry.cost.tokenBreakdown }
         if entry.totalTokens > 0 { return "\(SessionCost.abbreviatedCount(entry.totalTokens)) tok" }
         // Match the live row: an activity-based agent records no tokens on disk,
         // which is different from a session we simply couldn't read.
         if entry.isActivityBased == true { return "no token data" }
-        return "—"
+        return nil
     }
 
     private static func dayLabel(_ day: Date) -> String {
