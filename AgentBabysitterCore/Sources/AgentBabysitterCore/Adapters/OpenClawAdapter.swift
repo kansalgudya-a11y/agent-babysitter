@@ -110,6 +110,59 @@ public struct OpenClawAdapter: AgentAdapter {
         return primary
     }
 
+    // MARK: - Honest install signal
+
+    /// Both surfaces advertise the `openclaw` binary as their install signal
+    /// (see `cliExecutableNames`), but the two surfaces are NOT equally honest
+    /// when the binary is merely on PATH:
+    ///
+    ///   - `.sdk` is a parseable Claude Code view — when OpenClaw drives the
+    ///     Agent SDK it writes real, priced transcripts, so listing it on a
+    ///     bare install is honest (it produces data the moment it's used, and
+    ///     `claimsProcess` keeps it from faking a live process meanwhile).
+    ///   - `.gateway` is activity-only over an OPAQUE store we deliberately do
+    ///     not parse (no verifiable sample exists on any machine here — see the
+    ///     block above `parseLine`). A bare `openclaw` on PATH with an EMPTY or
+    ///     absent store would otherwise read as an active monitored agent that
+    ///     can never show a token, a cost, or a real turn — pure phantom.
+    ///
+    /// So the gateway only counts once its store actually holds a session file.
+    /// Install-detection ANDs this with the CLI/bundle presence check.
+    ///
+    /// NOTE (honesty): this gates VISIBILITY, not a parser. Whenever a real
+    /// native-gateway sample is captured, the gateway parser can be built and
+    /// verified; until then we show nothing rather than an invented number.
+    public func hasMonitoredDataOnDisk() -> Bool {
+        switch surface {
+        case .sdk: return true
+        case .gateway: return Self.gatewayStoreHasSessions(root: transcriptRoot)
+        }
+    }
+
+    /// Whether the native gateway store under `root` holds at least one real
+    /// session file (`<root>/agents/<agentId>/sessions/<id>.jsonl`, filtering
+    /// the index/checkpoint/trajectory siblings). Deliberately shallow — two
+    /// non-recursive directory reads — and returns false on the fast path when
+    /// `agents/` is absent (the empty/absent-store case), because it is called
+    /// from install-detection on the refresh cadence.
+    static func gatewayStoreHasSessions(root: URL) -> Bool {
+        let fm = FileManager.default
+        let agentsDir = root.appendingPathComponent("agents")
+        guard let agentDirs = try? fm.contentsOfDirectory(
+            at: agentsDir, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]) else { return false }
+        for agentDir in agentDirs {
+            let sessions = agentDir.appendingPathComponent("sessions")
+            guard let files = try? fm.contentsOfDirectory(
+                at: sessions, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]) else { continue }
+            if files.contains(where: { isNativeSessionFile($0.lastPathComponent) }) {
+                return true
+            }
+        }
+        return false
+    }
+
     // MARK: - SDK workspace classification
 
     /// Whether a slugified `~/.claude/projects` dir name is an ephemeral

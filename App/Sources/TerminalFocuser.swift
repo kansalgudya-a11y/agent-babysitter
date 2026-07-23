@@ -14,10 +14,12 @@ import AgentBabysitterCore
 /// to an honest no-op, and letting the caller say "couldn't locate it", is
 /// strictly better than teleporting the user somewhere unrelated.
 ///
-/// Known limitation (not yet addressed): even a successful activate brings the
-/// owning app forward at the application level, not the specific window/tab —
-/// a raise of the exact TTY-owning window would need the Accessibility API or a
-/// scripting bridge, gated on a permission prompt. Tracked as future work.
+/// F9 tier a: when Core captured the session's controlling tty and the owning
+/// app is a scriptable terminal (Apple Terminal or iTerm2), `focusSession`
+/// first raises the exact tab/window that owns that tty via AppleScript, and
+/// only falls back to application-level activation when that can't be done
+/// (unknown terminal, no tty, Automation permission denied, or no matching
+/// tab). The scripts SELECT a tab and never type into it — no stdin injection.
 @MainActor
 enum TerminalFocuser {
 
@@ -56,6 +58,16 @@ enum TerminalFocuser {
             for ancestor in [pid] + ProcessAncestry.ancestorPIDs(of: pid) {
                 if let app = NSRunningApplication(processIdentifier: ancestor),
                    app.activationPolicy == .regular {
+                    // F9 tier a: this GUI ancestor is the terminal (or app)
+                    // hosting the session. If it's a terminal we can script and
+                    // Core captured the session's tty, raise that exact tab
+                    // first; the terminal is already running (it's an ancestor
+                    // of the live pid) so the `tell` block can't spawn a new
+                    // one. Any failure degrades to app-level activation below.
+                    if let bundleID = app.bundleIdentifier, let tty = row.tty,
+                       selectTab(inTerminal: bundleID, tty: tty) {
+                        return true
+                    }
                     app.activate()
                     return true
                 }
@@ -74,5 +86,81 @@ enum TerminalFocuser {
             .first(where: { $0.bundleIdentifier == bundleID }) else { return false }
         app.activate()
         return true
+    }
+
+    // MARK: - F9 tier a: TTY-targeted tab selection
+
+    /// AppleScript, per scriptable terminal, that raises the tab/window whose
+    /// controlling terminal owns `<TTY>`. Core captures the device in `ps`'s
+    /// bare form (`ttys001`); Terminal.app and iTerm2 report the full
+    /// `/dev/ttys001`, so the scripts match on the SUFFIX (`ends with`) rather
+    /// than on equality. Each match is wrapped in `try` so a window/tab that
+    /// refuses to report a tty (busy, closing) is skipped instead of aborting
+    /// the scan, and the script returns the literal `found` only when it both
+    /// located AND selected the tab. Terminals not listed here are never
+    /// scripted — the caller falls back to plain application activation. The
+    /// scripts only SELECT; they never send keystrokes (no stdin injection).
+    private static let tabSelectScripts: [String: String] = [
+        "com.apple.Terminal": """
+        tell application "Terminal"
+          repeat with w in windows
+            repeat with t in tabs of w
+              try
+                if (tty of t) ends with "<TTY>" then
+                  set selected of t to true
+                  try
+                    set frontmost of w to true
+                  end try
+                  activate
+                  return "found"
+                end if
+              end try
+            end repeat
+          end repeat
+        end tell
+        """,
+        "com.googlecode.iterm2": """
+        tell application "iTerm2"
+          repeat with w in windows
+            repeat with t in tabs of w
+              repeat with s in sessions of t
+                try
+                  if (tty of s) ends with "<TTY>" then
+                    tell w to select
+                    tell t to select
+                    tell s to select
+                    activate
+                    return "found"
+                  end if
+                end try
+              end repeat
+            end repeat
+          end repeat
+        end tell
+        """,
+    ]
+
+    /// Raise the tab whose controlling tty ends with `tty` inside the scriptable
+    /// terminal `bundleID`. Returns true ONLY when the AppleScript ran without
+    /// error and reported it found the tab; false for an unknown terminal, a
+    /// malformed tty, a denied Automation permission, or no matching tab — so
+    /// the caller degrades to app-level activation instead of a dead click.
+    private static func selectTab(inTerminal bundleID: String, tty: String) -> Bool {
+        guard let template = tabSelectScripts[bundleID] else { return false }
+        // Defence in depth: the tty originates from `ps` and is expected to be a
+        // bare device token (`ttys001`, `console`). Strip a `/dev/` prefix if a
+        // future capture format adds one, then refuse anything that isn't purely
+        // alphanumeric so it can never break out of the AppleScript string
+        // literal and turn tab selection into script injection.
+        let token = tty.hasPrefix("/dev/") ? String(tty.dropFirst("/dev/".count)) : tty
+        guard !token.isEmpty, token.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
+        let source = template.replacingOccurrences(of: "<TTY>", with: token)
+        guard let script = NSAppleScript(source: source) else { return false }
+        var errorInfo: NSDictionary?
+        let result = script.executeAndReturnError(&errorInfo)
+        // A non-nil error dict means the terminal isn't scriptable, Automation
+        // was denied, or the script raised — all "couldn't target the tab".
+        guard errorInfo == nil else { return false }
+        return result.stringValue == "found"
     }
 }

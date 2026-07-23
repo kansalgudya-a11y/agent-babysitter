@@ -39,6 +39,12 @@ struct AgentBabysitterApp: App {
                          costLabel: model.moneyCompact(model.todayCost.dollars),
                          hottestLimit: model.hottestLimitPercent,
                          sparkline: model.sparklineImage)
+                // F8: the menu-bar label is the one view SwiftUI keeps mounted
+                // whether or not the popover is open, so it's where the
+                // first-run Stats auto-open must live (a Scene itself has no
+                // view to host `@Environment(\.openWindow)`). Parked as a
+                // zero-size background so it never disturbs the label's layout.
+                .background(StatsAutoOpener(model: model))
         }
         .menuBarExtraStyle(.window)
 
@@ -60,6 +66,29 @@ struct AgentBabysitterApp: App {
             HistoryView(model: model)
         }
         .windowResizability(.contentSize)
+    }
+}
+
+/// F8 — first-run Stats opener. A zero-size view parked in the always-alive
+/// menu-bar label (see the `.background` at the call site). When the first
+/// launch's `StatsRecompute` backfills days from before today, `AppModel`
+/// bumps `firstRunStatsRequest`; this view reacts by opening the existing
+/// "stats" Window scene. The window's `StatsView` reads `firstRunStatsMessage`
+/// and switches itself to the all-time range on the same signal — this opener
+/// only has to make the window appear. `onChange` never fires for the initial
+/// 0, so the window stays closed until the recompute actually has history to
+/// show; the `> 0` guard is belt-and-suspenders.
+private struct StatsAutoOpener: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: model.firstRunStatsRequest) { _, newValue in
+                guard newValue > 0 else { return }
+                openWindow(id: "stats")
+            }
     }
 }
 

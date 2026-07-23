@@ -45,16 +45,19 @@ public enum HooksInstaller {
             "[ \"$(stat -f%z '\(eventLogPath)' 2>/dev/null || echo 0)\" -lt \(maxLogBytesShell) ]"
         let writer: String
         if event == "PreToolUse" {
-            // PreToolUse fires on EVERY tool call and its payload is the only
-            // one carrying `tool_input` — the raw shell command lines and file
-            // contents the app never reads. It consumes only session_id +
-            // tool_name from this event (verified: hook payloads carry no
-            // rate_limits — that arrives via the status-line writer), so awk
-            // reconstructs a minimal line and none of the verbatim payload ever
-            // reaches disk. awk reads stdin to EOF — draining it so the writer
-            // never sees a broken pipe — and appends via its own redirection,
-            // so a missing log directory degrades to a silent no-op rather than
-            // an unwritten, undrained call.
+            // PreToolUse fires on EVERY tool call and its payload is the only one
+            // carrying `tool_input` — the raw shell command lines and full file/edit
+            // contents. awk reconstructs a MINIMAL line: session_id, tool_name, and a
+            // single bounded salient scalar (`tool_brief`, ≤256 chars — the command /
+            // file path / url / query / pattern, NOT bulk file contents). The brief
+            // may still contain a secret, so it is stripped by `ToolCallRedactor` in
+            // Core before it is ever displayed, and this local log is never
+            // synced/exported/notified/webhooked (0600, truncate-at-launch, 5MB cap).
+            // (Verified: hook payloads carry no rate_limits — that arrives via the
+            // status-line writer.) awk reads stdin to EOF — draining it so the writer
+            // never sees a broken pipe — and appends via its own redirection, so a
+            // missing log directory degrades to a silent no-op rather than an
+            // unwritten, undrained call.
             writer = "awk '\(preToolUseAwk(eventLogPath: eventLogPath))' 2>/dev/null"
         } else {
             // Notification/Stop are infrequent and carry no `tool_input`; their
@@ -66,18 +69,38 @@ public enum HooksInstaller {
         return "umask 077; if \(sizeGuard); then \(writer); else cat >/dev/null; fi #\(marker)"
     }
 
-    /// awk program (single-quoted inside the hook shell) that extracts only
-    /// `session_id` and `tool_name` from a PreToolUse payload and appends a
-    /// minimal JSON line — never `tool_input`. `\42` is the double-quote
+    /// awk program (single-quoted inside the hook shell) that extracts
+    /// `session_id`, `tool_name`, and ONE bounded salient scalar (`tool_brief`)
+    /// from a PreToolUse payload and appends a minimal JSON line — never the full
+    /// `tool_input`, and never bulk file/edit contents. `\42` is the double-quote
     /// character; the octal escape keeps emitted quotes clear of the enclosing
-    /// shell and Swift quoting. First-match is correct because both fields
-    /// serialize before `tool_input` in Claude Code's payload and no observed
-    /// `tool_input` value carries a look-alike key; a line without a session_id
-    /// prints nothing and the parser skips it.
+    /// shell and Swift quoting. First-match is correct because these fields
+    /// serialize before their look-alikes in Claude Code's payload; a value's
+    /// closing `"` also bounds it, so an embedded escaped quote truncates the brief
+    /// early (fail-safe). `tool_brief` is captured from the first present of
+    /// command / file_path / notebook_path / url / query / pattern; backslashes are
+    /// stripped so the emitted JSON stays parseable and the result is capped to 256
+    /// chars in-shell. The brief may carry a secret — `ToolCallRedactor` strips it
+    /// in Core before any display. A line without a session_id prints nothing and
+    /// the parser skips it.
     private static func preToolUseAwk(eventLogPath: String) -> String {
-        "match($0,/\"session_id\"[ \\t]*:[ \\t]*\"[^\"]*\"/){s=substr($0,RSTART,RLENGTH);sub(/^\"session_id\"[ \\t]*:[ \\t]*\"/,\"\",s);sub(/\"$/,\"\",s)}"
-        + " match($0,/\"tool_name\"[ \\t]*:[ \\t]*\"[^\"]*\"/){t=substr($0,RSTART,RLENGTH);sub(/^\"tool_name\"[ \\t]*:[ \\t]*\"/,\"\",t);sub(/\"$/,\"\",t)}"
-        + " END{if(s!=\"\")printf(\"{\\42hook_event_name\\42:\\42PreToolUse\\42,\\42session_id\\42:\\42%s\\42,\\42tool_name\\42:\\42%s\\42}\\n\",s,t) >> \"\(eventLogPath)\"}"
+        func capture(_ key: String, into variable: String, guarded: Bool = false) -> String {
+            // Mirror of the session_id/tool_name extraction for an arbitrary key.
+            // `guarded` sets the target only if still empty, so brief keys are tried
+            // in priority order (first present wins).
+            let assign = "\(variable)=substr($0,RSTART,RLENGTH);"
+                + "sub(/^\"\(key)\"[ \\t]*:[ \\t]*\"/,\"\",\(variable));sub(/\"$/,\"\",\(variable))"
+            let body = guarded ? "if(\(variable)==\"\"){\(assign)}" : assign
+            return "match($0,/\"\(key)\"[ \\t]*:[ \\t]*\"[^\"]*\"/){\(body)}"
+        }
+        let briefKeys = ["command", "file_path", "notebook_path", "url", "query", "pattern"]
+        let briefCaptures = briefKeys.map { capture($0, into: "b", guarded: true) }.joined(separator: " ")
+        return capture("session_id", into: "s")
+        + " " + capture("tool_name", into: "t")
+        + " " + briefCaptures
+        // Strip backslashes (keeps the emitted JSON string valid) and cap to 256.
+        + " END{gsub(/\\\\/,\"\",b);b=substr(b,1,256);"
+        + "if(s!=\"\")printf(\"{\\42hook_event_name\\42:\\42PreToolUse\\42,\\42session_id\\42:\\42%s\\42,\\42tool_name\\42:\\42%s\\42,\\42tool_brief\\42:\\42%s\\42}\\n\",s,t,b) >> \"\(eventLogPath)\"}"
     }
 
     // MARK: - Pure transforms (testable without touching the filesystem)
@@ -241,6 +264,10 @@ public enum HookEventParser {
     public struct Event {
         public let signal: (sessionID: String, kind: HookSignal.Kind, detail: String?)?
         public let usage: UsageLimitSnapshot?
+        /// F11: a redacted one-line summary of the tool that just started, for the
+        /// PreToolUse event only. Built here (on parse) so the raw `tool_input` never
+        /// leaves this function; consumers only ever see the redacted `ToolCallSummary`.
+        public let toolCall: (sessionID: String, summary: ToolCallSummary)?
     }
 
     public static func parse(line: Data) -> Event? {
@@ -249,6 +276,7 @@ public enum HookEventParser {
         }
 
         var signal: (String, HookSignal.Kind, String?)?
+        var toolCall: (String, ToolCallSummary)?
         if let sessionID = object["session_id"] as? String {
             switch object["hook_event_name"] as? String {
             case "Notification":
@@ -256,14 +284,31 @@ public enum HookEventParser {
             case "Stop":
                 signal = (sessionID, .turnCompleted, detail(object["last_assistant_message"]))
             case "PreToolUse":
+                // Keep the existing state signal (kind .toolStarted, detail = tool_name)
+                // exactly as before so session-state evaluation is untouched.
                 signal = (sessionID, .toolStarted, detail(object["tool_name"]))
+                if let toolName = object["tool_name"] as? String, !toolName.isEmpty {
+                    // The writer may deliver EITHER the full `tool_input` object (older
+                    // hook / historical log) OR a bounded `tool_brief` scalar (the new
+                    // minimizing awk). Redact whichever is present — never store the raw.
+                    let summary: ToolCallSummary
+                    if let toolInput = object["tool_input"] as? [String: Any] {
+                        summary = ToolCallRedactor.summarize(tool: toolName, toolInput: toolInput, at: Date())
+                    } else if let brief = object["tool_brief"] as? String {
+                        summary = ToolCallSummary(tool: toolName,
+                                                  summary: ToolCallRedactor.redact(brief), at: Date())
+                    } else {
+                        summary = ToolCallRedactor.summarize(tool: toolName, toolInput: nil, at: Date())
+                    }
+                    toolCall = (sessionID, summary)
+                }
             default: break
             }
         }
 
         let usage = usageSnapshot(from: object)
-        guard signal != nil || usage != nil else { return nil }
-        return Event(signal: signal, usage: usage)
+        guard signal != nil || usage != nil || toolCall != nil else { return nil }
+        return Event(signal: signal, usage: usage, toolCall: toolCall)
     }
 
     /// `rate_limits.five_hour` (plus `seven_day` when present) as Claude Code

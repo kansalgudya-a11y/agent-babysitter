@@ -441,6 +441,154 @@ enum UISnapshots {
                 welcomeDismissed: false)
         }
 
+        // MARK: F1 — coverage for the eight menu states the set didn't isolate
+        // Each is a single-purpose fixture QA can eyeball on its own; several
+        // states were previously only reachable inside a crowded composite.
+        // Rendered when Xcode returns.
+
+        // ERROR: process detection is degraded (macOS withheld process info)
+        // AND a session's latest turn was an API error — the two "something is
+        // wrong" surfaces at once. `apiError` and `processDetectionDegraded`
+        // are existing fields; nothing here depends on an unlanded lane.
+        menu("menu-error") { model in
+            var failing = row("a", "checkout-service", .working, dollars: 3.10,
+                              title: "run the migration and backfill orders")
+            failing.apiError = "API error: overloaded_error (retrying)"
+            model.applyFixture(
+                rows: [failing,
+                       row("b", "rollout-parser", .done,
+                           agent: ("codex", "Codex"), dollars: 1.75)],
+                summary: MenuBarSummary(worstState: .working, activeCount: 2),
+                usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true)],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["claude-code", "codex"],
+                todayCost: SessionCost(dollars: 6.20), costHistory: history,
+                processDetectionDegraded: true)
+        }
+
+        // EMPTY: agents installed and one open, but nothing is running and no
+        // limit reading has arrived yet — the quiet just-launched list. Distinct
+        // from menu-onboarding (noAgentsDetected: no agents installed at all)
+        // and from menu-quiet (which carries limit readings): here both the
+        // session list and the limits list are empty while agents are present.
+        menu("menu-empty") { model in
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: [:],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["claude-code"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // MUTED: the bell is off — every lifecycle notification paused at once.
+        // `notificationsMuted` is a public settable @Published var, so it pins
+        // inside the fixture closure (unlike unreadableAgents below).
+        menu("menu-muted") { model in
+            model.notificationsMuted = true
+            model.applyFixture(
+                rows: [row("a", "checkout-service", .working, dollars: 12.38,
+                           title: "add rate limiting to the checkout API"),
+                       row("b", "AgentBabysitter", .waitingForInput,
+                           entrypoint: "claude-desktop", dollars: 4.02)],
+                summary: MenuBarSummary(worstState: .waitingForInput, activeCount: 2),
+                usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true)],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["claude-code"],
+                todayCost: SessionCost(dollars: 18.15), costHistory: history)
+        }
+
+        // UNREADABLE: a session whose transcript the app can't parse renders as
+        // the "can't read this one" row (isUnreadable).
+        // KNOWN GAP (cross-file): the AGENT-level "Can't read <agent>" banner is
+        // driven by AppModel.unreadableAgents, which is `private(set)` and NOT an
+        // applyFixture parameter — it cannot be injected from UISnapshots, so
+        // this fixture covers the unreadable ROW only. Covering the banner needs
+        // an applyFixture(unreadableAgents:) parameter (or access relaxation) on
+        // AppModel — owned by the app-hub / row-model lane, not this file.
+        menu("menu-unreadable") { model in
+            model.applyFixture(
+                rows: [row("a", "some-project", .working, unreadable: true),
+                       row("b", "checkout-service", .done, dollars: 2.40)],
+                summary: MenuBarSummary(worstState: .working, activeCount: 2),
+                usageLimits: ["claude-code": limit(43, plan: "pro")],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["claude-code"],
+                todayCost: SessionCost(dollars: 2.40), costHistory: history)
+        }
+
+        // ACTIVITY-ONLY (F4): agents that can only report that they're active —
+        // no per-session cost, no lifecycle banners. MenuContent tags both the
+        // session group header and the limits row "activity only"
+        // (AgentCapabilityTier.activityOnly.rowLabel), driven by the real
+        // adapters' `isActivityBased` and AppModel.activityOnlyAgentNames.
+        // Gemini (link-only) and Cursor are the activity-only cases; a Claude
+        // row sits beside them as the cost+notify control so the contrast shows.
+        menu("menu-activity-only") { model in
+            model.applyFixture(
+                rows: [row("a", "checkout-service", .working, dollars: 12.38,
+                           title: "add rate limiting to the checkout API"),
+                       row("b", "#7f21ac0e", .working,
+                           agent: ("gemini", "Gemini"), entrypoint: "Gemini"),
+                       row("c", "#a84b4e9f", .working,
+                           agent: ("cursor", "Cursor"), entrypoint: "Cursor")],
+                summary: MenuBarSummary(worstState: .working, activeCount: 3),
+                usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true),
+                              "cursor": limit(42, plan: "Pro", resetsInMinutes: 12 * 24 * 60,
+                                              live: true, windowMinutes: 30 * 24 * 60),
+                              "gemini": limit(nil, plan: "Google AI Pro")],
+                installedAgents: allInstalled + [("cursor", "Cursor"), ("gemini", "Gemini")],
+                runningAgentIDs: ["claude-code", "gemini", "cursor"],
+                todayCost: SessionCost(dollars: 18.15), costHistory: history)
+        }
+
+        // F10 + F11 feature surfaces. COMPILE AND RENDER both pend the row-model
+        // lane: this fixture sets `SessionRow.git` (F10) and
+        // `SessionRow.recentToolCalls` (F11), the two fields that lane adds to
+        // SessionStore.swift (defaulted in init, build contract §1). MenuContent
+        // already reads them — `git.summary` on a .done row and
+        // `recentToolCalls.last.line` on a .working row — so the app target is
+        // already blocked on those same fields regardless of this file; once
+        // they land, everything (including this fixture) compiles and renders
+        // together. The GitSnapshot / ToolCallSummary VALUES below are built
+        // against the REAL Core types (already present and probe-verified); only
+        // the two SessionRow properties are unlanded. See report: cross-file
+        // dependency on SessionStore.swift (row-model lane).
+        menu("menu-feature-surfaces") { model in
+            // F11: the redacted last-tool-call feed. Summaries are already
+            // redaction OUTPUT — no key/token/password shapes — exactly what
+            // Core stores; MenuContent shows only `.last` on the working row.
+            var working = row("a", "checkout-service", .working, dollars: 12.38,
+                              title: "add rate limiting to the checkout API")
+            working.recentToolCalls = [
+                ToolCallSummary(tool: "Read", summary: "SessionStore.swift",
+                                at: now.addingTimeInterval(-90)),
+                ToolCallSummary(tool: "Edit", summary: "RateLimiter.swift",
+                                at: now.addingTimeInterval(-60)),
+                ToolCallSummary(tool: "Bash", summary: "swift test",
+                                at: now.addingTimeInterval(-20)),
+            ]
+            // F10: what a finished turn changed on disk, from a read-only
+            // git diff --shortstat + porcelain count.
+            var finished = row("b", "checkout-service", .done, dollars: 6.20,
+                               title: "wire the limiter into the request path")
+            finished.cwd = "/Users/dev/work/checkout-service"
+            finished.git = GitSnapshot(filesChanged: 6, added: 184,
+                                       removed: 12, uncommitted: 2)
+            // Clean-tree done row: git.summary == "", so MenuContent draws no
+            // git line — the "nothing changed" control beside the one that did.
+            var clean = row("c", "rollout-parser", .done,
+                            agent: ("codex", "Codex"), dollars: 1.75)
+            clean.git = GitSnapshot(filesChanged: 0, added: 0, removed: 0, uncommitted: 0)
+            model.applyFixture(
+                rows: [working, finished, clean],
+                summary: MenuBarSummary(worstState: .working, activeCount: 3),
+                usageLimits: ["claude-code": limit(43, plan: "pro", weekly: 23, live: true),
+                              "codex": limit(12, plan: "plus", weekly: 4)],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["claude-code", "codex"],
+                todayCost: SessionCost(dollars: 8.60), costHistory: history)
+        }
+
         // ~100 days of plausible history so every range has shape.
         let statsDays: [DayStat] = (0..<100).map { back in
             let day = Calendar.current.startOfDay(

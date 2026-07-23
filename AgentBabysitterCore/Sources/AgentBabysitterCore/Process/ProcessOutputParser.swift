@@ -4,10 +4,19 @@ import Foundation
 public struct RunningProcess: Equatable, Hashable, Sendable {
     public let pid: Int32
     public let cwd: String
+    /// Controlling terminal as `ps` reports it (e.g. `ttys001`), or nil when the
+    /// process has none (`ps` prints `??` — e.g. a CLI launched by an IDE or
+    /// launchd). Used by the App layer (F9) to select the exact terminal tab.
+    /// Format is the bare device name without the `/dev/` prefix, so a consumer
+    /// comparing against Terminal.app's `/dev/ttys001` must match on the suffix.
+    public let tty: String?
 
-    public init(pid: Int32, cwd: String) {
+    // tty defaulted so the ~30 existing `RunningProcess(pid:cwd:)` call sites
+    // (adapters, tests, fixtures) keep compiling unchanged.
+    public init(pid: Int32, cwd: String, tty: String? = nil) {
         self.pid = pid
         self.cwd = cwd
+        self.tty = tty
     }
 }
 
@@ -58,6 +67,26 @@ public enum ProcessOutputParser {
             }
         }
         return pids
+    }
+
+    /// Parse `ps -axo pid=,tty=` output into pid → controlling terminal.
+    /// The `tty=` column prints the bare device (e.g. `ttys001`) with no
+    /// argument tokens after it, so a simple pid / rest split is unambiguous.
+    /// Processes with no controlling terminal print `??`; those are skipped so
+    /// the map only holds pids the App can actually focus a tab for.
+    public static func ttysByPID(fromPS output: String) -> [Int32: String] {
+        var result: [Int32: String] = [:]
+        for rawLine in output.split(separator: "\n") {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let firstSpace = line.firstIndex(where: { $0 == " " || $0 == "\t" }),
+                  let pid = Int32(line[..<firstSpace]) else { continue }
+            let tty = line[line.index(after: firstSpace)...]
+                .trimmingCharacters(in: .whitespaces)
+            // `??` = no controlling terminal; empty guards a malformed row.
+            guard !tty.isEmpty, tty != "??" else { continue }
+            result[pid] = tty
+        }
+        return result
     }
 
     /// Parse `lsof -a -d cwd -Fn -p <pids>` field output into pid → cwd.

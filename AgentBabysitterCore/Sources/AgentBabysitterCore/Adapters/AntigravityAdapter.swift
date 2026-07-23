@@ -125,6 +125,14 @@ public struct AntigravityAdapter: AgentAdapter {
         // conversation; the hex stub is only the last resort (a brand-new
         // conversation has no summary yet). The agent badge already names the
         // surface, and there is no readable cwd to fall back on.
+        //
+        // HONESTY FLAG (documented, not fixed here — belongs to SessionStore,
+        // outside this file's lane): the store captures this value once at
+        // track-time. So a conversation first seen before Antigravity has
+        // written its summary keeps the "#<hex>" stub for the life of that
+        // tracked session, even though a later re-read here would now resolve a
+        // title. A live upgrade would need SessionStore to re-resolve the label
+        // per tick (memoized) rather than freeze the track-time SessionFileInfo.
         if let label = conversationLabel(forSessionID: id) { return label }
         return "#\(id.prefix(8))"
     }
@@ -137,17 +145,23 @@ public struct AntigravityAdapter: AgentAdapter {
 
     /// A human-readable label for a conversation UUID, read from Antigravity's
     /// own summary store at `<geminiRoot>/antigravity-cli/conversation_summaries.db`.
-    /// Verified against a live install: that one SQLite table carries a row per
-    /// conversation for BOTH the desktop and CLI surfaces (its `app_data_dir`
-    /// column is "antigravity" or "antigravity-cli"), each with a `title`
-    /// (usually empty) and a model-written `preview` (e.g. "Skipping Permissions
-    /// Security Flag"). We prefer `title`, then `preview`.
+    /// Verified against a live install (copied read-only, 7 rows): that one
+    /// SQLite table carries a row per conversation for BOTH the desktop and CLI
+    /// surfaces (its `app_data_dir` column is "antigravity" or "antigravity-cli"),
+    /// keyed by `conversation_id`, which is exactly the transcript filename UUID
+    /// (all 7 rows joined to a `<uuid>.db` on disk). Each row has a `title`
+    /// (empty on every observed row), a model-written `preview` (e.g. "Skipping
+    /// Permissions Security Flag"), plus `workspace_uris`/`project_id` context.
+    /// We prefer `title`, then `preview`, and prepend a workspace/project name
+    /// when one is genuinely present (see `composeLabel`).
     ///
     /// Best-effort: any failure — store absent (the CLI was never installed),
     /// no row yet (a live conversation before Antigravity has summarized it), or
     /// a read error — returns nil and the caller keeps the "#<hex>" stub.
-    /// IDE-surface conversations are not in this store (their titles live only
-    /// in the shared `state.vscdb` protobuf) and also fall back to the stub.
+    /// (Verified: 2 of the 8 CLI transcripts on disk had no summary row yet and
+    /// so correctly fall back to the stub.) IDE-surface conversations are not in
+    /// this store (their titles live only in the shared `state.vscdb` protobuf)
+    /// and also fall back to the stub — both observed IDE transcripts were absent.
     func conversationLabel(forSessionID id: String) -> String? {
         Self.summaryLabel(
             summariesDB: geminiRoot
@@ -158,6 +172,11 @@ public struct AntigravityAdapter: AgentAdapter {
 
     /// Extraction core (injected DB path so tests/probes can point it at a
     /// fixture). Opens the store read-only — never creating or writing it.
+    ///
+    /// The enriched read (title/preview + workspace/project context) is tried
+    /// first; if this build's store predates the `workspace_uris`/`project_id`
+    /// columns, `prepare` fails and we fall back to the minimal title/preview
+    /// read so a readable label is never lost to a schema mismatch.
     static func summaryLabel(summariesDB db: URL, conversationID id: String) -> String? {
         guard FileManager.default.fileExists(atPath: db.path) else { return nil }
         var handle: OpaquePointer?
@@ -165,23 +184,106 @@ public struct AntigravityAdapter: AgentAdapter {
             sqlite3_close(handle); return nil
         }
         defer { sqlite3_close(handle) }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(
+        if let label = queryLabel(
+            handle,
+            "SELECT title, preview, workspace_uris, project_id FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
+            id: id, columns: 4) {
+            return label
+        }
+        return queryLabel(
             handle,
             "SELECT title, preview FROM conversation_summaries WHERE conversation_id = ? LIMIT 1",
-            -1, &stmt, nil) == SQLITE_OK else { return nil }
+            id: id, columns: 2)
+    }
+
+    /// Runs one label query against an already-open read-only handle and folds
+    /// the row through `composeLabel`. Returns nil on a prepare failure (older
+    /// schema — the caller retries with fewer columns), an absent row, or an
+    /// all-empty label. `columns` bounds how many columns the SQL actually
+    /// selected so the 2-column fallback reads no out-of-range indices.
+    private static func queryLabel(_ handle: OpaquePointer?, _ sql: String,
+                                   id: String, columns: Int32) -> String? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
         // SQLITE_TRANSIENT — SQLite copies the id; mirrors AntigravityStateReader.
         sqlite3_bind_text(stmt, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
         func column(_ i: Int32) -> String {
-            sqlite3_column_text(stmt, i).map { String(cString: $0) } ?? ""
+            i < columns ? (sqlite3_column_text(stmt, i).map { String(cString: $0) } ?? "") : ""
         }
-        for label in [column(0), column(1)] {
-            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
+        return composeLabel(title: column(0), preview: column(1),
+                            workspaceURIs: column(2), projectID: column(3))
+    }
+
+    /// `project_id` values Antigravity writes when a conversation has no real
+    /// workspace — internal placeholders, never a name worth showing. Verified
+    /// as the ONLY `project_id` values across all 7 live rows, so on this
+    /// machine enrichment adds nothing and the label stays the bare preview
+    /// (behaviour-preserving); the enrichment fires only once a real workspace
+    /// or project appears.
+    static let placeholderProjectIDs: Set<String> = ["outside-of-project", "default-cli-project"]
+
+    /// Fold a summary row into a display label. Pure — the probe/tests exercise
+    /// it directly with the real column values. `core` is the first non-empty of
+    /// [title, preview]; a workspace/project context is prepended as "ctx · core"
+    /// when one is genuinely present and differs from the core. Returns nil when
+    /// the row carries nothing usable, so the caller keeps the "#<hex>" stub.
+    static func composeLabel(title: String, preview: String,
+                             workspaceURIs: String, projectID: String) -> String? {
+        let core = [title, preview]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        let context = projectContext(workspaceURIs: workspaceURIs, projectID: projectID)
+        switch (context, core) {
+        case let (ctx?, core?) where ctx != core: return "\(ctx) · \(core)"
+        case let (_, core?):                       return core
+        case let (ctx?, nil):                      return ctx
+        default:                                   return nil
         }
+    }
+
+    /// A human workspace/project name for the row, or nil. Prefers a real
+    /// filesystem name parsed from `workspace_uris`; otherwise a non-placeholder
+    /// `project_id`. Both were empty / placeholder on every probed row, so this
+    /// returns nil there — it never manufactures a name it cannot justify.
+    static func projectContext(workspaceURIs: String, projectID: String) -> String? {
+        if let workspace = workspaceBasename(fromURIs: workspaceURIs) { return workspace }
+        let pid = projectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pid.isEmpty && !placeholderProjectIDs.contains(pid) { return pid }
         return nil
+    }
+
+    /// Extract a folder name from `workspace_uris` — the container of workspace
+    /// roots (JSON array / delimited list / single value). We pull a name only
+    /// from an unambiguous `file://` URI or a bare absolute path (the first one
+    /// found); anything else returns nil rather than guess a label. NOTE:
+    /// `workspace_uris` was an empty string on all 7 probed rows, so this
+    /// parsing is standard-`file://`-format logic that is verified for the
+    /// empty/nil path but NOT confirmed against a populated live value.
+    static func workspaceBasename(fromURIs raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        func token(after start: String.Index) -> String {
+            // A path token ends at the next character that cannot sit inside a
+            // list-encoded URI (quotes, commas, brackets, whitespace).
+            String(trimmed[start...].prefix { ch in
+                ch != "\"" && ch != "'" && ch != "," && ch != "]"
+                    && ch != " " && ch != "\n" && ch != "\t" && ch != "\r"
+            })
+        }
+        var pathPortion: String?
+        if let range = trimmed.range(of: "file://") {
+            pathPortion = token(after: range.upperBound)
+        } else if trimmed.hasPrefix("/") {
+            pathPortion = token(after: trimmed.startIndex)
+        }
+        guard var path = pathPortion, !path.isEmpty else { return nil }
+        path = path.removingPercentEncoding ?? path
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        let name = (path as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (name.isEmpty || name == "/") ? nil : name
     }
 
     public var isActivityBased: Bool { true }

@@ -8,6 +8,7 @@ public final class HookEventWatcher: @unchecked Sendable {
     private let eventLogURL: URL
     private let onSignal: @Sendable (String, HookSignal) -> Void
     private let onUsage: (@Sendable (UsageLimitSnapshot) -> Void)?
+    private let onToolCall: (@Sendable (String, ToolCallSummary) -> Void)?
     private let queue = DispatchQueue(label: "app.agentbabysitter.hook-events")
     private var fsWatcher: FSEventsWatcher?
     private var offset: UInt64 = 0
@@ -15,10 +16,12 @@ public final class HookEventWatcher: @unchecked Sendable {
 
     public init(eventLogURL: URL = HooksInstaller.defaultEventLogURL,
                 onSignal: @escaping @Sendable (String, HookSignal) -> Void,
-                onUsage: (@Sendable (UsageLimitSnapshot) -> Void)? = nil) {
+                onUsage: (@Sendable (UsageLimitSnapshot) -> Void)? = nil,
+                onToolCall: (@Sendable (String, ToolCallSummary) -> Void)? = nil) {
         self.eventLogURL = eventLogURL
         self.onSignal = onSignal
         self.onUsage = onUsage
+        self.onToolCall = onToolCall
     }
 
     public func start() {
@@ -81,6 +84,11 @@ public final class HookEventWatcher: @unchecked Sendable {
             }
             if let usage = event.usage {
                 onUsage?(usage)
+            }
+            if let toolCall = event.toolCall {
+                // Already redacted in HookEventParser.parse — the raw tool_input
+                // never reaches this callback.
+                onToolCall?(toolCall.sessionID, toolCall.summary)
             }
         }
 

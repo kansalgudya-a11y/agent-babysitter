@@ -18,6 +18,25 @@ public struct SessionMatchCandidate: Equatable, Sendable {
     }
 }
 
+/// What an adapter can honestly report, so the UI never implies parity the
+/// adapter can't deliver. Derived from `isActivityBased` for every current
+/// adapter (activity-based ⇔ no per-turn cost and no lifecycle banners), but
+/// declared as its own type + overridable hook so a future adapter that breaks
+/// that correlation (e.g. an activity watcher that DOES publish real cost) can
+/// state its tier directly instead of the flag lying by proxy.
+public enum AgentCapabilityTier: String, Sendable, Equatable {
+    /// Publishes parsed token cost AND turn-boundary notifications.
+    case costAndNotify
+    /// State inferred from file activity only — no token cost, no "finished /
+    /// needs-you / stuck" banners. Shown to the user so a per-agent cost or a
+    /// ticked notification toggle isn't silently empty for these.
+    case activityOnly
+
+    /// Short tag the row / limits list appends for activity-only agents; empty
+    /// for full agents so the common case adds no chrome.
+    public var rowLabel: String { self == .activityOnly ? "activity only" : "" }
+}
+
 /// Everything agent-specific: where transcripts live, how to parse them into
 /// the normalized `TranscriptEntry` stream, and how to tie files to live
 /// processes. UI, state engine, reducer, and cost never touch agent details.
@@ -70,6 +89,18 @@ public protocol AgentAdapter: Sendable {
     /// turn-completion notifications are unreliable for these and are
     /// suppressed.
     var isActivityBased: Bool { get }
+    /// The honest capability the UI labels rows/limits with. Defaults to
+    /// `activityOnly` when `isActivityBased`, else `costAndNotify`; an adapter
+    /// may override to declare its tier directly.
+    var capabilityTier: AgentCapabilityTier { get }
+    /// Whether this adapter has real, monitorable data on disk right now, so a
+    /// bare CLI-on-PATH / installed-bundle isn't listed as an active monitored
+    /// agent that can never surface anything. Defaults to true: for every
+    /// parseable agent, presence of the tool IS the signal. An adapter whose
+    /// store is opaque and unverifiable (the OpenClaw gateway) overrides this
+    /// to require actual session data before it counts. Install-detection ANDs
+    /// this with the CLI/bundle presence check.
+    func hasMonitoredDataOnDisk() -> Bool
     /// True when sessions are PARSED out of the agent's data (so "running +
     /// files churning + zero sessions parsed" is a real format-drift signal).
     /// False for pure activity watchers, where zero parsed is normal.
@@ -124,6 +155,16 @@ public extension AgentAdapter {
     }
 
     var isActivityBased: Bool { false }
+
+    /// Activity-based ⇔ activity-only across every current adapter (no cost,
+    /// no banners); a full agent is cost-and-notify. Overridable when a future
+    /// adapter breaks the correlation.
+    var capabilityTier: AgentCapabilityTier {
+        isActivityBased ? .activityOnly : .costAndNotify
+    }
+
+    /// Presence of the tool is signal enough for a parseable agent.
+    func hasMonitoredDataOnDisk() -> Bool { true }
 
     var sessionsAreParsed: Bool { !isActivityBased }
 

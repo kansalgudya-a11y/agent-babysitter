@@ -251,6 +251,21 @@ struct MenuContent: View {
                         Text("\(group.rows.count)")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
+                        // F4: activity-only agents (Cursor, Manus, Gemini,
+                        // Antigravity) infer state from file-write gaps — they
+                        // publish no per-session cost and no lifecycle banners.
+                        // Labelling the group once says so, so an empty cost
+                        // cell on its rows reads as "this tier can't report
+                        // cost", not "not read yet". All rows in a group share
+                        // one agentID, hence one tier. The string is Core's
+                        // (AgentCapabilityTier.rowLabel) so menu and adapter
+                        // can't drift on the wording.
+                        if group.rows.first?.isActivityBased == true {
+                            Text(AgentCapabilityTier.activityOnly.rowLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .help("This agent only reports that it's active — no per-session cost, and no needs-you / finished / stuck alerts.")
+                        }
                         VStack { Divider() }
                     }
                     .padding(.horizontal, 12)
@@ -650,6 +665,19 @@ struct MenuContent: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            // F4: the same capability-honesty tag the session groups carry —
+            // an activity-only agent (Cursor, Manus, Gemini, Antigravity) still
+            // reports a usage limit but never a per-session cost or a lifecycle
+            // banner, so the limits list names the tier too. Matched by display
+            // name against AppModel's derived list (there is no id-keyed
+            // variant); wording is Core's so it can't drift from the group tag.
+            if model.activityOnlyAgentNames.contains(entry.name) {
+                Text(AgentCapabilityTier.activityOnly.rowLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .help("This agent reports a usage limit but no per-session cost and no needs-you / finished / stuck alerts.")
             }
         }
         .accessibilityElement(children: .ignore)
@@ -1211,6 +1239,37 @@ struct SessionRowView: View {
                         .foregroundStyle(.orange)
                         .lineLimit(1)
                 }
+                // F11: what the agent is doing right now — the latest tool call,
+                // already redacted in Core (secrets are stripped on parse, before
+                // the summary ever reaches this view; see ToolCallRedactor). Only
+                // while working, so a finished row's last tool doesn't read as
+                // still-running. `.line` is "Bash: npm test" (tool + summary).
+                if row.state == .working, let call = row.recentToolCalls.last {
+                    Label {
+                        Text(call.line)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    } icon: {
+                        Image(systemName: "gearshape.2")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("The most recent tool this agent ran — any keys, tokens or passwords are redacted before it's shown.")
+                }
+                // F10: on a finished turn, what the run changed on disk — a
+                // read-only `git diff --shortstat` + uncommitted count injected
+                // by the app hub off the store tick. `summary` is "" for a clean
+                // tree, so this only draws when there's something to report.
+                if row.state == .done, let git = row.git, !git.summary.isEmpty {
+                    Label {
+                        Text(git.summary).lineLimit(1)
+                    } icon: {
+                        Image(systemName: "arrow.triangle.branch")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("Working-tree changes in this session's folder, from a read-only git diff. \"uncommitted\" counts files not yet committed.")
+                }
             }
             Spacer()
             // The row is a glance: show the ONE honest figure that fits — dollars
@@ -1320,6 +1379,35 @@ struct SessionRowView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // F11: recent tool activity — the redacted one-liners the app hub
+            // keeps for this session (last ~10, newest first). Every summary is
+            // already stripped of secrets in Core, so it's safe to show in full
+            // here; the row above shows only the latest. Indexed by position
+            // (ToolCallSummary is Equatable, not Identifiable) — stable enough
+            // for a short, append-only list.
+            if !row.recentToolCalls.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recent activity")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(row.recentToolCalls.suffix(10).reversed().enumerated()),
+                            id: \.offset) { pair in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(pair.element.line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Text(Self.humanAgo(pair.element.at))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .help("Tools this agent recently ran, most recent first — secrets redacted.")
             }
             HStack(spacing: 14) {
                 Button("Jump to session") { onJump() }

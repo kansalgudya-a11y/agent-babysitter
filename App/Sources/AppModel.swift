@@ -314,6 +314,56 @@ final class AppModel: ObservableObject {
         guideVersionFloor = current
     }
 
+    // MARK: - F7 remote push (webhook)
+
+    /// Opt-in second notification sink. Off by default; the URL is supplied by
+    /// the USER only (never observed content). The default payload carries just
+    /// {agent, project, state, timestamp} — no prompt/question/transcript/tool
+    /// text — because the app's privacy promise is "transcripts and prompts
+    /// never leave your Mac". Sending the pending question is the separate,
+    /// default-OFF `webhookIncludeQuestion` toggle below.
+    @Published var webhookEnabled: Bool {
+        didSet { UserDefaults.standard.set(webhookEnabled, forKey: "webhookEnabled") }
+    }
+    @Published var webhookURLString: String {
+        didSet { UserDefaults.standard.set(webhookURLString, forKey: "webhookURL") }
+    }
+    /// Default OFF, warned in the UI: transmits the pending question / title
+    /// (prompt-derived text) to the user's endpoint. Never sends tool command
+    /// lines regardless of this toggle.
+    @Published var webhookIncludeQuestion: Bool {
+        didSet { UserDefaults.standard.set(webhookIncludeQuestion, forKey: "webhookIncludeQuestion") }
+    }
+    /// Last webhook send failure, surfaced under the toggle; nil after a success.
+    @Published private(set) var webhookStatus: String?
+    private let webhookSink = WebhookSink()
+
+    // MARK: - F8 first-run stats reveal
+
+    /// Bumped exactly once, on genuine first run, after the initial
+    /// StatsRecompute backfills prior-day history — an always-alive opener view
+    /// observes it and opens the Stats window with an all-time range.
+    @Published var firstRunStatsRequest: Int = 0
+    /// "Before today, your agents already cost you $X across N days." nil = none.
+    @Published private(set) var firstRunStatsMessage: String?
+
+    // MARK: - F10 git snapshots / F11 tool-call feed (app-side caches)
+
+    /// F10: git working-tree summary per `"agentID/sessionID"`, computed OFF the
+    /// 2s tick and injected onto `.done` rows at publish. `forGrowth` records the
+    /// row's `lastGrowthAt` the snapshot was taken for, so a later turn re-runs it.
+    private var gitByKey: [String: (snap: GitSnapshot, forGrowth: Date?)] = [:]
+    /// Keys with a git read in flight — never spawn a second concurrent read.
+    private var gitInFlight: Set<String> = []
+    /// Last `lastGrowthAt` epoch we ran git for per key, even when the result was
+    /// nil (a non-git cwd). Prevents re-spawning `git` every tick for a `.done`
+    /// row whose cwd is not a repo; a new turn (fresh epoch) re-arms it.
+    private var gitAttemptedGrowth: [String: Date] = [:]
+    /// F11: redacted last-10 tool-call summaries per `"claude-code/sessionID"`,
+    /// fed by the Precision-mode hook watcher, injected onto rows at publish.
+    /// Never notified/webhooked/synced — display only.
+    private var toolCallsByKey: [String: [ToolCallSummary]] = [:]
+
     private let projectsRoot: URL
     // OpenClawAdapter.allSurfaces() MUST precede ClaudeCodeAdapter(): the SDK
     // surface claims OpenClaw's temp-workspace transcripts under ~/.claude/projects
@@ -385,8 +435,12 @@ final class AppModel: ObservableObject {
     /// timers, no notification prompt — views render from injected fixtures.
     static let isSnapshotMode = CommandLine.arguments.contains("--ui-snapshots")
 
-    init() {
-        let defaults = UserDefaults.standard
+    /// The complete set of first-run defaults this app owns. Extracted from
+    /// init() so F2's "Reset all settings" can re-seed them after wiping the
+    /// persistent domain — `removePersistentDomain` also drops every registered
+    /// default, so the app must re-register them or every toggle reverts to the
+    /// raw type zero (false / 0 / "") instead of its documented default.
+    static func registerDefaults(_ defaults: UserDefaults) {
         defaults.register(defaults: ["stallThresholdMinutes": 5.0,
                                      "notifyWaiting": true,
                                      "notifyDone": true,
@@ -416,6 +470,11 @@ final class AppModel: ObservableObject {
                                      // config, so on-by-default is the honest default.
                                      "waitingReminderEnabled": true,
                                      "doneAutoHideMinutes": 10.0])
+    }
+
+    init() {
+        let defaults = UserDefaults.standard
+        AppModel.registerDefaults(defaults)
         let root = PlatformPaths.homeDirectory(".claude/projects")
         projectsRoot = root
         let stallMinutes = defaults.double(forKey: "stallThresholdMinutes")
@@ -454,6 +513,9 @@ final class AppModel: ObservableObject {
         }
         impactThisMonth = ImpactLedger.summary(impactLedger, days: AppModel.currentMonthDayKeys())
         weeklyDigestEnabled = defaults.bool(forKey: "weeklyDigestEnabled")
+        webhookEnabled = defaults.bool(forKey: "webhookEnabled")
+        webhookURLString = defaults.string(forKey: "webhookURL") ?? ""
+        webhookIncludeQuestion = defaults.bool(forKey: "webhookIncludeQuestion")
         notifyLimit = defaults.bool(forKey: "notifyLimit")
         notifyPace = defaults.bool(forKey: "notifyPace")
         // Snapshot renders share the user's defaults domain — pin the pace
@@ -880,7 +942,9 @@ final class AppModel: ObservableObject {
         }
         recomputeStatsHistoryIfNeeded()   // one-shot; guarded by a version key
         adoptNewlyInstalledAgents()
-        let rows = await store.rows()
+        // `var` so F10's git summary and F11's tool-call feed can be folded onto
+        // the value-type rows just before publishing (the store carries neither).
+        var rows = await store.rows()
         // The planner and EVERY delivery path see UNFILTERED state. With "Hide
         // finished sessions: Immediately" (doneAutoHide == 0) a finished row is
         // filtered out of `rows` before its .done edge is ever observed, so the
@@ -919,6 +983,35 @@ final class AppModel: ObservableObject {
         let toCancel = departed.union(prevWaiting.subtracting(nowWaiting))
         if !toCancel.isEmpty {
             notificationManager.cancelNotifications(sessionIDs: Array(toCancel))
+        }
+        // F10/F11: evict the app-side caches for sessions that departed this
+        // tick. The composite keys are rebuilt from the OUTGOING rows (`self.rows`
+        // still holds each departed session's agentID) — `departed` is a bare id
+        // set, so `removeValue(forKey: id)` alone would never match the
+        // "agentID/id" keys and the caches would grow unbounded.
+        if !departed.isEmpty {
+            for old in self.rows where departed.contains(old.id) {
+                let gkey = "\(old.agentID)/\(old.id)"
+                gitByKey.removeValue(forKey: gkey)
+                gitInFlight.remove(gkey)
+                gitAttemptedGrowth.removeValue(forKey: gkey)
+                toolCallsByKey.removeValue(forKey: "claude-code/\(old.id)")
+            }
+        }
+        // F10: a row that just entered .done gets a read-only git diff for its
+        // cwd, computed OFF this tick (detached) and stored back for the next
+        // publish — never blocking the 2s heartbeat.
+        scheduleGitSnapshots(for: rows)
+        // F10/F11: fold the async-computed git snapshot and the redacted
+        // tool-call feed onto the value-type rows just before publishing. Absent
+        // entries leave the row at its defaults (nil / []). Injecting into the
+        // DISPLAYED rows (not plannerRows) keeps this text off every delivery path.
+        for i in rows.indices {
+            let gkey = "\(rows[i].agentID)/\(rows[i].id)"
+            if let snap = gitByKey[gkey]?.snap { rows[i].git = snap }
+            if let calls = toolCallsByKey["claude-code/\(rows[i].id)"], !calls.isEmpty {
+                rows[i].recentToolCalls = calls
+            }
         }
         // Assign @Published state only when it actually changed: an unconditional
         // assign fires objectWillChange every tick and re-renders the whole menu,
@@ -1037,6 +1130,30 @@ final class AppModel: ObservableObject {
                                         muted: notificationsMuted,
                                         enabledKinds: enabledKinds,
                                         stallThresholdMinutes: Int(stallThresholdMinutes))
+            // F7: mirror the SAME deduped, non-activity, mute-/quiet-gated events
+            // to the user's opt-in webhook. Default payload = agent/project/state/
+            // timestamp only (no prompt/transcript/tool text). The pending
+            // question rides along ONLY when the user turned on the explicit
+            // include-question toggle. Tool command lines are NEVER sent.
+            if webhookEnabled, !webhookURLString.isEmpty,
+               let url = URL(string: webhookURLString) {
+                for event in events {
+                    guard let row = plannerRows.first(where: { $0.id == event.sessionID })
+                    else { continue }
+                    let payload = WebhookPayload(
+                        agent: row.agentName,
+                        project: row.projectName,
+                        state: row.state.label,
+                        timestamp: Date().ISO8601Format(),
+                        question: webhookIncludeQuestion
+                            ? (row.hookDetail?.detail ?? row.title) : nil)
+                    Task { [weak self] in
+                        guard let self else { return }
+                        let failure = await self.webhookSink.send(payload, to: url)
+                        await MainActor.run { self.webhookStatus = failure }
+                    }
+                }
+            }
         }
 
         // Opt-in follow-up for waiting sessions the user missed. While muted
@@ -1093,6 +1210,53 @@ final class AppModel: ObservableObject {
                 suggestions: newSuggestions)
             persistImpact()
         }
+    }
+
+    /// F10: for every row that just entered `.done` with a real cwd, run a
+    /// READ-ONLY `git diff`/`status` for that directory OFF the 2s tick and cache
+    /// the result. Guards: never two concurrent reads for one key (`gitInFlight`),
+    /// and never re-run the same growth epoch — including the nil/no-repo result —
+    /// so a `.done` row whose cwd is not a git repo doesn't re-spawn `git` every
+    /// tick (`gitAttemptedGrowth`). A new turn (fresh `lastGrowthAt`) re-arms it.
+    private func scheduleGitSnapshots(for rows: [SessionRow]) {
+        guard !Self.isSnapshotMode else { return }
+        for row in rows where row.state == .done {
+            guard let cwd = row.cwd,
+                  !cwd.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            let key = "\(row.agentID)/\(row.id)"
+            let epoch = row.lastGrowthAt ?? .distantPast
+            if gitAttemptedGrowth[key] == epoch || gitInFlight.contains(key) { continue }
+            gitInFlight.insert(key)
+            gitAttemptedGrowth[key] = epoch
+            let growth = row.lastGrowthAt
+            Task.detached { [weak self] in
+                let snap = await GitSnapshotReader.read(cwd: cwd)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.gitInFlight.remove(key)
+                    if let snap {
+                        self.gitByKey[key] = (snap, growth)
+                    } else {
+                        // Non-git cwd or failure: keep no snapshot, but the epoch
+                        // stays recorded above so we don't hammer `git` each tick.
+                        self.gitByKey.removeValue(forKey: key)
+                    }
+                    Task { await self.refresh() }
+                }
+            }
+        }
+    }
+
+    /// F11: append one redacted tool-call summary to a session's ring buffer,
+    /// capping at the last 10 (oldest dropped). Claude-Code-only, keyed to match
+    /// the row injection. The summary is already redacted in Core — this only
+    /// stores and displays it, never notifies/webhooks/syncs it.
+    private func appendToolCall(sessionID: String, summary: ToolCallSummary) {
+        let key = "claude-code/\(sessionID)"
+        var list = toolCallsByKey[key] ?? []
+        list.append(summary)
+        if list.count > 10 { list.removeFirst(list.count - 10) }
+        toolCallsByKey[key] = list
     }
 
     /// Day keys for every day of the current month up to today. Builds each
@@ -1315,6 +1479,25 @@ final class AppModel: ObservableObject {
         lastStatsTick = .distantPast   // let the next tick rebuild statsDays
         BabysitterLog.store.info(
             "recomputed \(totals.dayTotals.count, privacy: .public) days of cost history")
+
+        // F8: on genuine first run, once the recompute has backfilled history,
+        // reveal the pre-existing spend by opening the Stats window with an
+        // all-time range and a one-line summary. Gated by a dedicated bool key so
+        // it fires at most once, ever, and only when there IS a past to show
+        // (days strictly before today). The auto-opener view observes
+        // `firstRunStatsRequest`.
+        let defaults2 = UserDefaults.standard
+        if !defaults2.bool(forKey: "firstRunStatsShown"), !Self.isSnapshotMode {
+            let todayKey = DailyCostHistory.key(for: Date())
+            let prior = totals.dayTotals.filter { $0.key < todayKey }
+            if !prior.isEmpty {
+                let dollars = prior.values.reduce(0, +)
+                firstRunStatsMessage = "Before today, your agents already cost you "
+                    + money(dollars) + " across \(prior.count) day\(prior.count == 1 ? "" : "s")."
+                firstRunStatsRequest &+= 1
+            }
+            defaults2.set(true, forKey: "firstRunStatsShown")
+        }
     }
 
     /// In-memory mirror of the persisted "costHistory" dict so the 2s refresh
@@ -1626,6 +1809,10 @@ final class AppModel: ObservableObject {
             } catch {
                 hooksError = error.localizedDescription
             }
+            // F11: tool-call summaries are Precision-mode data — drop the whole
+            // feed when Precision is turned off so stale "doing: …" captions
+            // don't linger on rows.
+            toolCallsByKey.removeAll()
             stopHookWatcherIfUnused()
         }
         applyStoreConfiguration()
@@ -1691,6 +1878,16 @@ final class AppModel: ObservableObject {
                 self.capturedUsage["claude-code"] = snapshot
                 await self.refresh()
             }
+        }, onToolCall: { [weak self] sessionID, summary in
+            // F11: tool-call surfacing is Precision-mode data. The watcher is
+            // shared with the usage meter, so ignore tool calls unless Precision
+            // is actually on (matches the row display, which only shows them
+            // while Precision captures hooks).
+            Task { @MainActor in
+                guard let self, self.precisionModeEnabled else { return }
+                self.appendToolCall(sessionID: sessionID, summary: summary)
+                await self.refresh()
+            }
         })
         watcher.start()
         hookWatcher = watcher
@@ -1732,6 +1929,52 @@ final class AppModel: ObservableObject {
             suppressToggleApply = false
             launchAtLoginStatus = "Couldn't change Start at login: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - F2 reset preferences + clear stored data
+
+    /// F2: wipe every preference THIS app owns and re-seed its documented
+    /// defaults. Touches only this app's persistent domain — never another
+    /// tool's data. Does NOT delete accumulated stat/history files (that is
+    /// `deleteStoredData`). The caller MUST confirm first (destructive). The
+    /// live @Published toggles are not re-read here — the Advanced-tab copy
+    /// recommends a relaunch so every view rebinds to the re-seeded defaults.
+    func resetAllSettings() {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        UserDefaults.standard.removePersistentDomain(forName: id)
+        AppModel.registerDefaults(.standard)
+    }
+
+    /// F2: delete accumulated stored DATA (cost/session/impact history), not
+    /// settings. Clears only this app's own keys and files. The caller MUST
+    /// confirm first (destructive).
+    func deleteStoredData() {
+        let d = UserDefaults.standard
+        // The task's mandated key set, plus statsRecomputeVersion so the next
+        // launch rebuilds history cleanly instead of trusting a now-empty cache.
+        for key in ["costByAgent", "costByProject", "costByModel", "sessionCounts",
+                    "countedSessionIDs", "activeMinutes", "impactLedger", "costHistory",
+                    "statsRecomputeVersion"] {
+            d.removeObject(forKey: key)
+        }
+        // Files: the session history, and the hook event log (truncated, not
+        // deleted — the watcher keeps the same 0600 file across launches).
+        try? FileManager.default.removeItem(at: AppModel.historyFileURL)
+        if let handle = try? FileHandle(forWritingTo: HooksInstaller.defaultEventLogURL) {
+            try? handle.truncate(atOffset: 0)
+            try? handle.close()
+        }
+        // In-memory mirrors, so the UI reflects the wipe without a relaunch.
+        statsDays = []
+        costHistory = []          // didSet rebuilds the (now empty) sparkline
+        sessionHistory = []
+        impactThisMonth = ImpactLedger.Summary()
+        impactLedger = ImpactLedger.Ledger()
+        costHistoryCache = nil
+        gitByKey = [:]
+        gitInFlight = []
+        gitAttemptedGrowth = [:]
+        toolCallsByKey = [:]
     }
 
     /// Remove the Claude Code hooks and status-line helper this app installed,

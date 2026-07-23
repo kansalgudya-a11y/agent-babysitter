@@ -18,6 +18,13 @@ public struct ShellProcessScanner: ProcessScanning {
     ) async throws -> [String: [RunningProcess]] {
         let commOutput = try await run("/bin/ps", ["-axo", "pid=,comm="])
         let argsOutput = try await run("/bin/ps", ["-axo", "pid=,args="])
+        // Separate pass for the controlling terminal (F9). Kept apart from the
+        // comm/args passes because `tty=` is a clean scalar with no embedded
+        // spaces — folding it into the comm pass would break the space-in-path
+        // parsing comm= exists to preserve. Best-effort: a failed tty scan just
+        // leaves rows with tty == nil (App falls back to app-activation focus).
+        let ttyOutput = (try? await run("/bin/ps", ["-axo", "pid=,tty="])) ?? ""
+        let ttys = ProcessOutputParser.ttysByPID(fromPS: ttyOutput)
 
         var pidsByAdapter: [String: [Int32]] = [:]
         for adapter in adapters {
@@ -44,7 +51,7 @@ public struct ShellProcessScanner: ProcessScanning {
             result[id] = pids.compactMap { pid in
                 guard let cwd = cwds[pid],
                       adaptersByID[id]?.claimsProcess(cwd: cwd) ?? true else { return nil }
-                return RunningProcess(pid: pid, cwd: cwd)
+                return RunningProcess(pid: pid, cwd: cwd, tty: ttys[pid])
             }
         }
         return result

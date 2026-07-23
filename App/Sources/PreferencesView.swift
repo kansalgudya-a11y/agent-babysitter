@@ -8,6 +8,10 @@ struct PreferencesView: View {
     @StateObject private var license = LicenseManager()
     @StateObject private var updates = UpdateChecker()
     @State private var licenseKeyInput = ""
+    // F2: destructive actions are gated behind a confirmation alert each, so a
+    // stray click can never wipe settings or recorded history unprompted.
+    @State private var showResetConfirm = false
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         TabView {
@@ -362,7 +366,73 @@ struct PreferencesView: View {
             } header: {
                 Text("Advanced")
             } footer: {
-                Text("Your transcripts and prompts never leave your Mac, and nothing about your usage is collected or uploaded. The app reaches the network only for these, each on its own trigger: currency rates from open.er-api.com while your display currency isn't USD; a daily update check to github.com (toggle it in License & Updates); Live usage above only when you turn it on (api.anthropic.com, cursor.com, api.manus.im); and licence activation to api.lemonsqueezy.com only when you press Activate. Everything else runs entirely on your Mac.")
+                // "By default" is load-bearing: the webhook below is the one path
+                // that, opt-in, can send a prompt off the Mac (question-text
+                // toggle) — so the blanket "never leave" promise is qualified and
+                // the webhook host is enumerated alongside every other trigger.
+                Text("By default your transcripts and prompts stay on your Mac, and nothing about your usage is collected or uploaded. The app reaches the network only for these, each on its own trigger: currency rates from open.er-api.com while your display currency isn't USD; a daily update check to github.com (toggle it in License & Updates); Live usage above only when you turn it on (api.anthropic.com, cursor.com, api.manus.im); licence activation to api.lemonsqueezy.com only when you press Activate; and, only if you switch it on below, a single webhook URL you provide (status metadata only — or, if you also enable the separate question-text option there, the pending question). Everything else runs entirely on your Mac.")
+            }
+
+            // F7 — Remote push to a user-supplied webhook. Opt-in; the default
+            // payload is metadata only. The URL is only ever typed by the user
+            // here (never taken from any observed content).
+            Section {
+                Toggle(isOn: $model.webhookEnabled) {
+                    Text("Send alerts to a webhook")
+                    Text("Off by default. When on, the app POSTs a small status update to a URL you provide — your own server, or an ntfy.sh topic — so you can be pinged elsewhere (e.g. your phone). The default message contains only which agent, which project, its state, and the time: never prompts, transcripts, questions, or command lines. It follows the same alerts, mute, and quiet-hours rules as your local notifications.")
+                }
+                .hapticTick(on: model.webhookEnabled)
+                if model.webhookEnabled {
+                    TextField("Webhook URL", text: $model.webhookURLString,
+                              prompt: Text("https://ntfy.sh/your-topic"))
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .lineLimit(1)
+                    Toggle(isOn: $model.webhookIncludeQuestion) {
+                        Text("Also include the pending question text")
+                        Text("⚠️ This sends prompt content off your Mac. When on, the agent's actual question or prompt text is transmitted to the URL above — so use only an endpoint you fully control. Leave off to send status metadata only. Command lines are never sent, either way.")
+                    }
+                    .hapticTick(on: model.webhookIncludeQuestion)
+                    // webhookIncludeQuestion defaults OFF (see AppModel); this
+                    // extra red line makes the trade-off unmissable while it's on.
+                    if model.webhookIncludeQuestion {
+                        Label("Prompt text will be sent to your webhook.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    if let status = model.webhookStatus {
+                        Label(status, systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Remote notifications")
+            } footer: {
+                Text("Opt-in. Use a URL that only you control. Standard ntfy.sh topics are public to anyone who knows the topic name, so pick an unguessable one or self-host.")
+            }
+
+            // F2 — Reset preferences / clear stored data. Both are confirmed and
+            // both touch only this app's own settings and files.
+            Section {
+                Button("Reset all settings…") { showResetConfirm = true }
+                Button("Delete stored data…", role: .destructive) { showDeleteConfirm = true }
+            } header: {
+                Text("Reset")
+            } footer: {
+                Text("Reset all settings returns every preference on every tab to its default. Delete stored data erases the cost and session history this app has recorded on your Mac — totals, per-agent and per-project breakdowns, session history, and the local event log. Neither touches any other app's data, and neither can be undone.")
+            }
+            .alert("Reset all settings?", isPresented: $showResetConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Reset", role: .destructive) { model.resetAllSettings() }
+            } message: {
+                Text("Every preference on every tab returns to its default. Your session-history file and recorded event log are left in place. This can't be undone.")
+            }
+            .alert("Delete stored data?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { model.deleteStoredData() }
+            } message: {
+                Text("This permanently erases the cost totals, per-agent and per-project breakdowns, session counts, session history, and local event log this app recorded on your Mac. Your preferences are kept. This can't be undone.")
             }
 
     }
