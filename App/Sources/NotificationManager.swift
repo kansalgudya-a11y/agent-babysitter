@@ -98,15 +98,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// "Claude Code is at 82% of its 5-hour limit." One identifier per agent
-    /// per window kind so re-alerts replace rather than stack. The label
-    /// follows the window length (Cursor is monthly, Manus daily).
+    /// per window kind so re-alerts replace rather than stack. The window is
+    /// named from its length by the same Core table the menu row uses (Codex
+    /// weekly, Cursor billing cycle, Manus daily), so the banner and the row
+    /// under it always call it the same thing.
     func deliverLimitAlert(agentName: String, agentID: String,
                            usedPercent: Double, resetsAt: Date?,
                            windowMinutes: Int = 300, isWeekly: Bool = false) {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
         let kind = isWeekly ? "weekly" : "primary"
-        let window = isWeekly ? "weekly" : Self.windowLabel(minutes: windowMinutes)
+        let window = Self.windowLabel(minutes: windowMinutes, isWeekly: isWeekly)
         var body = "\(agentName) is at \(Int(usedPercent))% of its \(window) limit."
         if let resetsAt, resetsAt > Date() {
             let minutes = Int(resetsAt.timeIntervalSinceNow / 60)
@@ -134,7 +136,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         requestAuthorizationIfNeeded()
         let content = UNMutableNotificationContent()
         let kind = isWeekly ? "weekly" : "primary"
-        let window = isWeekly ? "weekly" : Self.windowLabel(minutes: windowMinutes)
+        let window = Self.windowLabel(minutes: windowMinutes, isWeekly: isWeekly)
         let earlyText = MenuContent.humanDuration(resetsAt.timeIntervalSince(exhaustionAt))
         content.body = "\(agentName) is at \(Int(usedPercent))% and on pace to hit its "
             + "\(window) limit at \(Self.clockTime(exhaustionAt)) — "
@@ -239,14 +241,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                                          content: content, trigger: nil))
     }
 
-    /// Window name from its length, matching the menu's own labels.
-    private static func windowLabel(minutes: Int) -> String {
-        switch minutes {
-        case ..<361: return "5-hour"
-        case ..<(2 * 24 * 60): return "daily"
-        case ..<(8 * 24 * 60): return "weekly"
-        default: return "monthly"
-        }
+    /// Window name from its length. Delegates to Core so a banner can't name a
+    /// window differently from the menu row it fires under: this used to
+    /// return "monthly" for a 30-day window the menu captioned "billing
+    /// cycle", which reads as two separate limits rather than one.
+    /// `isWeekly` names the agent's secondary 7-day window, whatever the
+    /// primary's length is.
+    private static func windowLabel(minutes: Int, isWeekly: Bool) -> String {
+        (isWeekly ? UsageWindowName.secondaryWeekly
+                  : UsageWindowName.forWindow(minutes: minutes)).phrase
     }
 
     private func body(for event: NotificationEvent, row: SessionRow,

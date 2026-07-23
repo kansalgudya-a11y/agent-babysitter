@@ -73,7 +73,7 @@ struct MenuContent: View {
             }
 
             Divider()
-            if !model.installedAgents.isEmpty {
+            if !model.usageAgents.isEmpty {
                 limitsSection
                 Divider()
             }
@@ -206,12 +206,12 @@ struct MenuContent: View {
         .padding(.vertical, 6)
     }
 
-    /// Open apps by default; expanding shows every installed agent. An agent
-    /// gets its 5h reading when one is known, an honest fallback otherwise.
+    /// Open apps — plus any agent whose window we can still speak about — by
+    /// default; expanding shows every agent that reports one. An agent gets
+    /// its reading when one is known, an honest fallback otherwise.
     private var limitEntries: [(id: String, name: String, limit: UsageLimitSnapshot?, running: Bool)] {
         let order = ["claude-code": 0, "codex": 1, "manus": 2, "cursor": 3,
                      "antigravity": 4, "antigravity-ide": 5, "antigravity-cli": 6,
-                     "hermes": 7, "openclaw": 8, "openclaw-sdk": 9,
                      "gemini": 10, "gemini-cli": 11]
         let now = Date()
         // An agent whose window has rolled over shows a "reset" bar with
@@ -223,8 +223,7 @@ struct MenuContent: View {
         // Gemini keeps its usage on Google's servers (link-only, no local
         // reading), so it sits at the very bottom, below even reset windows.
         func bottomTier(_ id: String) -> Int { id.hasPrefix("gemini") ? 1 : 0 }
-        return model.installedAgents
-            .filter { showAllLimits || model.runningAgentIDs.contains($0.id) }
+        let candidates = model.usageAgents
             .map { (id: $0.id, name: $0.name,
                     limit: model.usageLimits[$0.id],
                     running: model.runningAgentIDs.contains($0.id)) }
@@ -232,15 +231,114 @@ struct MenuContent: View {
                 (bottomTier(a.id), resetTier(a.limit), order[a.id] ?? 99, a.id)
                     < (bottomTier(b.id), resetTier(b.limit), order[b.id] ?? 99, b.id)
             }
+        // Surfaces of one product share ONE account quota — Antigravity's
+        // umbrella, IDE and CLI ids all resolve the same state.vscdb — so
+        // admitting each of them on its own reading would stack three
+        // identical rows in the DEFAULT list, where before this rule they
+        // appeared only while running. The rule is therefore stated over the
+        // READING, not over the app: the collapsed list prints a given quota
+        // once, and "Show all" is the escape hatch that lists every surface
+        // separately (that is what expanding is for).
+        //
+        // That includes two RUNNING siblings. Open both the Antigravity
+        // desktop app and the Antigravity IDE and the earlier rule printed
+        // "Antigravity 12%" directly above "Antigravity IDE 12%" — one
+        // account's reading rendered as two bars, which reads as two separate
+        // quotas that happen to match. Suppressing the second costs nothing
+        // actionable: the surviving row IS that quota, and which surfaces are
+        // open is already answered by the session list above. A row carrying
+        // no reading is never suppressed — it duplicates nothing, and it is
+        // the row that says "not shared by this app".
+        //
+        // TWO passes, and that is the whole point of the ordering: rows that
+        // earn their place by being OPEN are resolved first, so an open
+        // surface always outranks a closed sibling for the shared reading. One
+        // forward pass made the outcome depend on the sort — `order` puts the
+        // closed umbrella ("antigravity", 4) ahead of the running IDE
+        // ("antigravity-ide", 5), so the umbrella claimed the reading, was
+        // admitted on it, and the running sibling was then appended anyway:
+        // the same reading printed twice. Reproduced by rendering, not by
+        // reasoning. Admission is collected as a SET and the original order
+        // re-applied at the end, so two passes can't reorder the list either.
+        var claimed: Set<String> = []
+        var admitted: Set<String> = []
+        func earnsPlaceWithoutAReading(_ entry: (id: String, name: String,
+                                                 limit: UsageLimitSnapshot?,
+                                                 running: Bool)) -> Bool {
+            showAllLimits || entry.running
+        }
+        for entry in candidates where earnsPlaceWithoutAReading(entry) {
+            guard let key = entry.limit.map(Self.quotaKey) else {
+                admitted.insert(entry.id)
+                continue
+            }
+            let isFirstToClaim = claimed.insert(key).inserted
+            if showAllLimits || isFirstToClaim { admitted.insert(entry.id) }
+        }
+        for entry in candidates where !earnsPlaceWithoutAReading(entry) {
+            guard Self.holdsReportableWindow(entry.limit, at: now),
+                  let key = entry.limit.map(Self.quotaKey),
+                  claimed.insert(key).inserted else { continue }
+            admitted.insert(entry.id)
+        }
+        return candidates.filter { admitted.contains($0.id) }
     }
 
-    /// Whether expanding would reveal anything beyond the open apps.
-    private var hasClosedAgents: Bool {
-        model.installedAgents.contains { !model.runningAgentIDs.contains($0.id) }
+    /// Identity of a READING, not of an agent: two surfaces showing the same
+    /// numbers from the same capture are the same fact stated twice.
+    private static func quotaKey(_ limit: UsageLimitSnapshot) -> String {
+        [limit.usedPercent.map { String($0) } ?? "-",
+         String(limit.windowMinutes),
+         limit.resetsAt.map { String($0.timeIntervalSince1970) } ?? "-",
+         String(limit.capturedAt.timeIntervalSince1970),
+         limit.plan ?? "-"].joined(separator: "|")
+    }
+
+    /// Whether the collapsed list keeps a place for this agent's window. Two
+    /// states qualify, and both are statements we can make without inventing
+    /// a number.
+    ///
+    /// 1. A reading for a window we can PROVE hasn't rolled over. Account
+    ///    quotas are true whether or not the app happens to be open — a weekly
+    ///    window doesn't stop being true because you quit Codex — so these
+    ///    rows stay in the collapsed list, dimmed.
+    /// 2. That same reading AFTER its window rolled over, for as long as the
+    ///    window it reset into is the current one. Dropping the row at
+    ///    rollover made the offline case expire exactly when it mattered: the
+    ///    user who quit Codex on Monday watched the row vanish at Thursday's
+    ///    reset and got nothing back until Codex next ran. "This window reset"
+    ///    is a true, useful statement about right now, and the row renders it
+    ///    as an empty bar and the word "reset" with no percentage — no
+    ///    fabricated number, and no suggestion that a fresh reading exists.
+    ///    One window length is the honest edge: past it we'd be captioning a
+    ///    window we have no evidence about at all, so the row ages out to
+    ///    "Show all" exactly as it used to.
+    ///
+    /// Requiring `resetsAt` is load-bearing for both branches: neither "hasn't
+    /// rolled over" nor "rolled over recently" can be established without it,
+    /// so an undated percentage (Antigravity offline) would otherwise be
+    /// pinned on screen forever with no way to age out. Plan-only rows (no %)
+    /// don't qualify — they'd add a line that answers nothing, which is what
+    /// "Show all" is for. Neither branch resurrects an agent that never had a
+    /// reading: `usedPercent` must be a real number we once read.
+    private static func holdsReportableWindow(_ limit: UsageLimitSnapshot?, at now: Date) -> Bool {
+        guard let limit, limit.usedPercent != nil, let resets = limit.resetsAt else { return false }
+        // Covers both branches: `resets > now` is the live case, and the
+        // window that began AT `resets` runs one window length past it.
+        return resets.addingTimeInterval(TimeInterval(limit.windowMinutes) * 60) > now
     }
 
     private var limitsSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        // Computed ONCE per render, deliberately: `limitEntries` sorts every
+        // agent and builds a five-component quotaKey string per row, and this
+        // body is re-evaluated on each @Published change from the store's 2s
+        // tick while the menu is open. Reading the property three times (the
+        // hidden count, the emptiness check, the ForEach) tripled that work
+        // for an identical answer.
+        let entries = limitEntries
+        // How many agents "Show all" would reveal that the collapsed list hides.
+        let hiddenCount = model.usageAgents.count - entries.count
+        return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 // Not all agents use a 5-hour window: Cursor is a monthly
                 // billing cycle, Manus a daily refresh. Each row shows its
@@ -250,28 +348,41 @@ struct MenuContent: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if hasClosedAgents {
+                // The first disjunct keeps the collapse affordance reachable
+                // once expanded, when nothing is left to reveal.
+                if showAllLimits || hiddenCount > 0 {
                     Button {
                         withAnimation(.easeOut(duration: 0.15)) { storedShowAllLimits.toggle() }
                     } label: {
                         HStack(spacing: 2) {
-                            Text(showAllLimits ? "Open apps only" : "Show all")
+                            // Collapsed no longer means open-only — an agent
+                            // whose window we can still speak about stays
+                            // visible with the app closed.
+                            Text(showAllLimits ? "Show fewer" : "Show all")
                             Image(systemName: showAllLimits ? "chevron.up" : "chevron.down")
                         }
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
-                    .help(showAllLimits ? "Hide agents that aren't running"
-                                        : "Also show installed agents that aren't running right now")
+                    // Precise about what each direction does: collapsing keeps
+                    // open agents (even ones that publish nothing) and any
+                    // window still worth stating — a current reading, or one
+                    // that has just rolled over — and hides the rest,
+                    // including a percentage with no reset time, which can't
+                    // be shown to belong to any particular window.
+                    .help(showAllLimits
+                          ? "Show only open agents and windows with something current to say"
+                          : "Also show every installed agent that reports a usage limit, "
+                            + "including ones with nothing current")
                 }
             }
-            if limitEntries.isEmpty {
-                Text("No agent apps are open right now.")
+            if entries.isEmpty {
+                Text("No usage limits to show — nothing open, and no current readings.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-            ForEach(limitEntries, id: \.id) { entry in
+            ForEach(entries, id: \.id) { entry in
                 limitRow(entry)
                     .opacity(limitRowOpacity(entry))
             }
@@ -317,7 +428,7 @@ struct MenuContent: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 44, alignment: .trailing)
-                            .help("The \(windowName(limit.windowMinutes)) rolled over; fresh numbers arrive with the next agent activity.")
+                            .help("The \(windowLabel(limit.windowMinutes).spoken) rolled over; fresh numbers arrive with the next agent activity.")
                     } else {
                         // Readings age between turns; show the pace-corrected
                         // estimate ("≈9%") once one applies.
@@ -374,6 +485,9 @@ struct MenuContent: View {
                let caption = limitCaption(limit) {
                 caption
                     .font(.caption2)
+                    // Four pieces can outrun one line on a long credit plan —
+                    // wrap rather than truncate the reset time away.
+                    .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             // Same floors as the pace notification (user-set in Preferences)
@@ -383,14 +497,23 @@ struct MenuContent: View {
             if entry.running, let limit = entry.limit {
                 // Codex now delivers a WEEKLY window as its primary reading
                 // (window_minutes 10080, no secondary), so pace it against the
-                // weekly floor and label it — not the 5-hour path, which fired
-                // the wrong pace threshold and dedup bucket.
-                let primaryIsWeekly = limit.windowMinutes >= 7 * 24 * 60
+                // weekly floor — not the 5-hour path, which fired the wrong
+                // pace threshold and dedup bucket. The LABEL is the window's
+                // own name, not the floor's: a 30-day billing cycle also
+                // paces against the weekly floor, and calling it "week:"
+                // directly under a caption reading "billing cycle" was a
+                // visible self-contradiction.
                 paceCaption(limit,
-                            floor: primaryIsWeekly ? model.paceWeeklyFloor : model.paceFiveHourFloor,
-                            prefix: primaryIsWeekly ? "week: " : "")
+                            floor: Self.paceFloor(for: limit, model: model),
+                            prefix: limit.windowMinutes > 360
+                                ? "\(windowLabel(limit.windowMinutes).tag): " : "")
                 if let weekly = limit.weeklyWindow {
-                    paceCaption(weekly, floor: model.paceWeeklyFloor, prefix: "week: ")
+                    // The SAME name a 7-day primary gets. Hardcoding "week: "
+                    // here put "week: on pace…" under a Claude row while a
+                    // Codex row in the same popover said "weekly: on pace…"
+                    // for an identical 10080-minute window.
+                    paceCaption(weekly, floor: model.paceWeeklyFloor,
+                                prefix: "\(UsageWindowName.secondaryWeekly.tag): ")
                 }
             }
             // Cursor/Manus keep their real numbers behind a login the user
@@ -409,6 +532,21 @@ struct MenuContent: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(limitAccessibilityLabel(entry))
+    }
+
+    /// Which user-set floor a window is paced against — shared by the visible
+    /// caption, its spoken mirror, and (through the same Core boundary)
+    /// `PaceAlertPlanner`, so the menu can't stay silent about a state the
+    /// banner interrupts for.
+    ///
+    /// The split is the window's NAME, not a second length comparison of its
+    /// own. This used to test `>= 7 days` while the name table called anything
+    /// from 2 days up "weekly", so a 3-day window would have been captioned
+    /// "weekly: on pace…" while obeying the slider labelled "Short window pace
+    /// from" — one boundary in the copy, another in the behaviour.
+    private static func paceFloor(for limit: UsageLimitSnapshot, model: AppModel) -> Double {
+        UsageWindowName.forWindow(minutes: limit.windowMinutes).isLong
+            ? model.paceWeeklyFloor : model.paceFiveHourFloor
     }
 
     /// One reading of the pace, shared by the visible caption and its
@@ -439,7 +577,9 @@ struct MenuContent: View {
     /// The pace line, always on from the user's floor up — reassuring when
     /// the window outlasts its reset ("on pace for ~62% at reset"), a
     /// warning when it doesn't ("on pace to hit the limit at 2:14 PM").
-    /// Works for the 5h snapshot and its weeklyWindow.
+    /// Works for any primary window (5h, daily, weekly, billing cycle) and
+    /// for the secondary weeklyWindow riding on it — the math is
+    /// window-agnostic; only the floor and the name differ.
     @ViewBuilder
     private func paceCaption(_ window: UsageLimitSnapshot, floor: Double,
                              prefix: String) -> some View {
@@ -474,19 +614,58 @@ struct MenuContent: View {
             }
             return "\(entry.name), no usage data"
         }
+        // Mirrors the visible precedence in `limitRow`: plan-only first, then
+        // the rolled-over state. Speaking the stale percentage of a window
+        // that has already reset — while the row itself shows "reset" and no
+        // number — is the one place the spoken and visible forms could still
+        // disagree about whether there is anything to act on.
+        if limit.usedPercent == nil, let plan = limit.plan {
+            return "\(entry.name), \(plan) plan"
+        }
+        if limit.isExpired() {
+            return "\(entry.name), \(windowLabel(limit.windowMinutes).spoken) has rolled over, "
+                + "waiting for a fresh reading"
+                + (Self.stalenessPhrase(limit).map { ", \($0)" } ?? "")
+        }
         if let used = UsageForecast.estimatedCurrentPercent(limit) ?? limit.usedPercent {
-            var text = "\(entry.name), \(Int(used)) percent of the \(windowName(limit.windowMinutes)) used"
+            // Same truncated integer the bar and caption use, so spoken and
+            // visible can't disagree — and so used + left is exactly 100.
+            let shown = Int(min(max(used, 0), 100))
+            var text = "\(entry.name), \(shown) percent of the "
+                + "\(windowLabel(limit.windowMinutes).spoken) used"
+            if limit.windowMinutes > 360 {
+                text += ", \(100 - shown) percent left"
+            }
             if let resets = limit.resetsAt, resets > Date() {
                 text += ", resets in \(Self.humanDuration(resets.timeIntervalSinceNow))"
+            }
+            // The same staleness cue the caption draws, from the same helper.
+            // Closed-agent rows are default-visible precisely BECAUSE an
+            // account quota outlives the app that wrote it — which makes them
+            // the rows most likely to be days old. Speaking a day-old number
+            // with no hint of its age tells a VoiceOver user something a
+            // sighted user can see is out of date.
+            if let staleness = Self.stalenessPhrase(limit) {
+                text += ", \(staleness)"
             }
             // The pace captions are drawn inside this ignored-children
             // element, so VoiceOver only hears them if they're spoken here.
             // Running apps only — mirrors the visible captions.
             if entry.running {
-                text += paceSentence(limit, floor: model.paceFiveHourFloor, name: "")
+                // Same floor and same window NAME the visible caption picks:
+                // Codex's primary IS the weekly window, so reading it against
+                // the 5-hour floor made VoiceOver announce a pace the visible
+                // row deliberately stayed silent about — and naming a monthly
+                // cycle "weekly" made it announce one the row contradicted.
+                text += paceSentence(
+                    limit, floor: Self.paceFloor(for: limit, model: model),
+                    name: limit.windowMinutes > 360
+                        ? "\(windowLabel(limit.windowMinutes).spoken) " : "")
                 if let weekly = limit.weeklyWindow {
+                    // Spoken form of the same name the visible prefix uses —
+                    // one window, one word, whichever sense you read it with.
                     text += paceSentence(weekly, floor: model.paceWeeklyFloor,
-                                         name: "weekly window ")
+                                         name: "\(UsageWindowName.secondaryWeekly.spoken) ")
                 }
             }
             return text
@@ -508,39 +687,109 @@ struct MenuContent: View {
         }
     }
 
-    /// Human name for a usage window, from its length.
-    private func windowName(_ minutes: Int) -> String {
-        switch minutes {
-        case ..<361: return "five hour window"
-        case ..<(2 * 24 * 60): return "daily quota"
-        case ..<(8 * 24 * 60): return "weekly window"
-        default: return "billing cycle"
-        }
+    /// Names for a usage window, from its length. The names themselves live in
+    /// Core (`UsageWindowName`) because the notification path names the same
+    /// windows and can't import this view: when they each kept their own list,
+    /// a Cursor alert saying "monthly limit" fired under a row captioned
+    /// "billing cycle".
+    private func windowLabel(_ minutes: Int) -> UsageWindowName {
+        UsageWindowName.forWindow(minutes: minutes)
     }
 
-    /// "resets in 2h 22m · week 23%" — whatever parts are known. Only the
-    /// weekly part escalates to orange/red, by its own severity (the 5h bar
-    /// already carries the 5h color).
+    /// "weekly · 76% left · resets in 5d 17h · week 23%" — whatever parts are
+    /// known. Only the weekly part escalates to orange/red, by its own
+    /// severity (the bar already carries the primary window's color).
     private func limitCaption(_ limit: UsageLimitSnapshot) -> Text? {
         var pieces: [Text] = []
+        let expired = limit.isExpired()
+        // A rolled-over PRIMARY window has no percentage to qualify, so every
+        // piece that describes it is suppressed below. The secondary weekly
+        // piece is not one of them: it belongs to a different window and
+        // carries its own expiry check (see there). What the primary does
+        // still have is the one fact worth stating, and the reason the row
+        // keeps its place at all (see `holdsReportableWindow`): WHICH window
+        // rolled over. Without it the row is an empty bar and the bare word
+        // "reset", which reads as a button rather than a status. The trailing
+        // "as of …" piece then dates the last reading we had, so nothing here
+        // implies a fresh one.
+        let window = windowLabel(limit.windowMinutes)
+        if expired {
+            pieces.append(Text(window.tag).foregroundColor(.secondary.opacity(0.7)))
+            pieces.append(Text("window reset").foregroundColor(.secondary.opacity(0.7)))
+        }
+        // Codex's PRIMARY window is weekly (10080, secondary null) — unlike
+        // Claude's 5-hour. A bare percentage doesn't say which. 5h windows are
+        // left untouched: naming the window is noise on one that refills before
+        // your coffee, and their caption already carries the reset clock.
+        if limit.windowMinutes > 360, !expired {
+            pieces.append(Text(window.tag).foregroundColor(.secondary.opacity(0.7)))
+        }
         // Credit-based agents (Manus) carry the balance in the plan label —
         // keep it visible even when the bar shows the daily quota.
-        if let plan = limit.plan, plan.localizedCaseInsensitiveContains("credit") {
+        let hasCreditBalance = limit.plan?.localizedCaseInsensitiveContains("credit") ?? false
+        if let plan = limit.plan, hasCreditBalance {
             pieces.append(Text(plan).foregroundColor(.secondary.opacity(0.7)))
+        }
+        // "How much is left" is the number you plan a week around. Derive it
+        // from the SAME shown value the bar and the trailing % use, and
+        // subtract the already-truncated integer so the two always sum to
+        // exactly 100 ("24%" + "76% left"), never 24/77. The ≈ mirrors the
+        // trailing readout so an estimated remainder is never read as measured.
+        // Skipped on a credit plan: "1,276 credits" already answers "what's
+        // left", and two different currencies for it read as a contradiction.
+        if limit.windowMinutes > 360, !expired, !hasCreditBalance, let used = limit.usedPercent {
+            let estimate = UsageForecast.estimatedCurrentPercent(limit)
+            let shown = Int(min(max(estimate ?? used, 0), 100))
+            pieces.append(Text("\(estimate != nil ? "≈" : "")\(100 - shown)% left")
+                .foregroundColor(.secondary.opacity(0.7)))
         }
         if let phrase = resetPhrase(limit.resetsAt) {
             pieces.append(Text(phrase).foregroundColor(.secondary.opacity(0.7)))
         }
-        if let weekly = limit.weeklyUsedPercent {
+        // The agent's OTHER window, when it publishes one. Named exactly as a
+        // 7-day primary is ("weekly"), because it is the same window — this
+        // said "week 91%" while a Codex row in the same popover captioned an
+        // identical 10080 minutes "weekly", and the banner that fires off this
+        // number says "weekly limit".
+        //
+        // Suppressed once we can PROVE it rolled over, which is not the same
+        // test as the primary's: a row is retained for up to one primary
+        // window past reset, and on an agent with a window longer than a week
+        // the secondary would have rolled over inside that grace period,
+        // leaving a dead percentage printed as current on a row that says it
+        // has no number. `!= true` is deliberate — a weekly percentage with no
+        // reset date can't be shown to be stale, and suppressing what we
+        // merely can't date would hide a true reading.
+        if let weekly = limit.weeklyUsedPercent, limit.weeklyWindow?.isExpired() != true {
             let color: Color = weekly >= 90 ? .red : weekly >= 70 ? .orange
                 : .secondary.opacity(0.7)
-            pieces.append(Text("week \(Int(weekly))%").foregroundColor(color))
+            pieces.append(Text("\(UsageWindowName.secondaryWeekly.tag) \(Int(weekly))%")
+                .foregroundColor(color))
+        }
+        if !pieces.isEmpty, let staleness = Self.stalenessPhrase(limit) {
+            pieces.append(Text(staleness).foregroundColor(.secondary.opacity(0.7)))
         }
         guard var caption = pieces.first else { return nil }
         for piece in pieces.dropFirst() {
             caption = caption + Text(" · ").foregroundColor(.secondary.opacity(0.7)) + piece
         }
         return caption
+    }
+
+    /// "as of 1d 4h ago" once a reading has aged past an hour, nil while it's
+    /// still fresh enough that saying so would be noise.
+    ///
+    /// An account quota outlives the app that wrote it, so a row here can
+    /// legitimately show a day-old number — and since those rows are now
+    /// visible with the app CLOSED, they are the ones most likely to be old.
+    /// A reading you can't tell is stale is the same trap as showing no
+    /// reading at all, so this is said on screen rather than only in the
+    /// tooltip. One helper, so the caption, the tooltip and the VoiceOver
+    /// label can't disagree about whether a reading is current.
+    static func stalenessPhrase(_ limit: UsageLimitSnapshot, now: Date = Date()) -> String? {
+        let age = now.timeIntervalSince(limit.capturedAt)
+        guard age >= 3600 else { return nil }
+        return "as of \(humanDuration(age)) ago"
     }
 
     /// "resets in 2h 22m" when the reset time is known and ahead of us.
@@ -550,7 +799,11 @@ struct MenuContent: View {
     }
 
     /// Compact duration that scales past a day, so monthly (Cursor) and daily
-    /// (Manus) windows don't render as "resets in 720h 0m".
+    /// (Manus) windows don't render as "resets in 720h 0m". Components
+    /// TRUNCATE rather than round, deliberately: on a long window that costs
+    /// at most 59 minutes of displayed precision, and it always errs toward
+    /// "you have slightly less time than this" — the safe direction for a
+    /// number people plan a week around.
     static func humanDuration(_ seconds: TimeInterval) -> String {
         let total = max(Int(seconds), 60)
         let days = total / 86_400
@@ -574,15 +827,23 @@ struct MenuContent: View {
         if let resets = limit.resetsAt, resets > Date() {
             parts.append("resets in " + Self.humanDuration(resets.timeIntervalSinceNow))
         }
-        if let weekly = limit.weeklyUsedPercent {
-            var text = "weekly window \(Int(weekly))% used"
+        // Same window and same expiry gate as the caption piece it explains —
+        // hovering a row captioned "weekly 91%" must not produce a different
+        // word for that window, nor a number the caption has withdrawn.
+        if let weekly = limit.weeklyUsedPercent, limit.weeklyWindow?.isExpired() != true {
+            var text = "\(UsageWindowName.secondaryWeekly.spoken) \(Int(weekly))% used"
             if let resets = limit.weeklyResetsAt, resets > Date() {
                 text += ", resets in \(Int(resets.timeIntervalSinceNow / 86_400))d"
             }
             parts.append(text)
         }
-        let age = Int(Date().timeIntervalSince(limit.capturedAt) / 60)
-        parts.append(age < 1 ? "just updated" : "as of \(age)m ago")
+        // A closed agent's account quota can be days old and still current, so
+        // the age has to scale past an hour — "as of 1440m ago" is unreadable.
+        // Below the caption's one-hour cue the tooltip is where "how fresh?"
+        // gets answered, so it still says something rather than nothing.
+        let age = Date().timeIntervalSince(limit.capturedAt)
+        parts.append(Self.stalenessPhrase(limit)
+                     ?? (age < 60 ? "just updated" : "as of \(Self.humanDuration(age)) ago"))
         return parts.joined(separator: " · ")
     }
 

@@ -106,7 +106,12 @@ struct PreferencesView: View {
                 Picker("Show in the menu bar", selection: $model.menuBarStyle) {
                     Text("Status + count").tag("status")
                     Text("Today's cost").tag("cost")
-                    Text("Hottest 5h limit %").tag("limit")
+                    // The number behind this style is the max across EVERY
+                    // agent's primary window, whatever its length — on an
+                    // account with Codex installed it is usually the weekly
+                    // one. Naming it "5h" made the menu bar contradict the
+                    // row it came from.
+                    Text("Hottest limit %").tag("limit")
                     Text("7-day cost trend").tag("trend")
                 }
                 Picker("Currency", selection: $model.currencyCode) {
@@ -195,8 +200,11 @@ struct PreferencesView: View {
                     }
                 }
                 Toggle(isOn: $model.notifyLimit) {
-                    Text("⚠️ An agent nears its 5-hour limit")
-                    Text("One heads-up per window when usage crosses the level below, so a long task doesn't burn the whole window unnoticed.")
+                    // Governs every window an agent meters, not just Claude's
+                    // 5-hour one: Codex's week and Cursor's billing cycle
+                    // alert through this same switch.
+                    Text("⚠️ An agent nears a usage limit")
+                    Text("One heads-up per window when usage crosses the level below — for each agent's own window, whether that's five hours, a day, a week, or a billing cycle — so a long task doesn't burn the whole window unnoticed.")
                 }
                 .hapticTick(on: model.notifyLimit)
                 if model.notifyLimit {
@@ -218,9 +226,20 @@ struct PreferencesView: View {
                 // These floors also gate the "on pace to hit the limit"
                 // lines in the menu, so they stay visible even when the
                 // notification toggle above is off.
+                // Two floors, split by window LENGTH rather than by agent —
+                // the stored keys are still paceFiveHourFloor/paceWeeklyFloor,
+                // but neither has been 5-hour-or-weekly-only since Manus (a
+                // daily quota) and Cursor (a monthly billing cycle) shipped.
+                // The help text names the split by the WORD the row shows
+                // ("5h"/"daily" vs "weekly"/"billing cycle") rather than by a
+                // duration, because that word is literally the boundary:
+                // UsageWindowName.isLong is what both the menu's pace line and
+                // PaceAlertPlanner route on. Describing it as "refills within
+                // a day" was already wrong for a 36-hour window, and would
+                // have gone properly wrong for the first 2-to-7-day one.
                 HStack {
                     Slider(value: $model.paceFiveHourFloor, in: 0...90, step: 5) {
-                        Text("5-hour pace from")
+                        Text("Short window pace from")
                     }
                     .hapticTick(on: model.paceFiveHourFloor)
                     Text(model.paceFiveHourFloor == 0 ? "always"
@@ -228,10 +247,10 @@ struct PreferencesView: View {
                         .monospacedDigit()
                         .frame(width: 52, alignment: .trailing)
                 }
-                .help("Show the 5-hour pace line in the menu once the window is this full — green when the pace is fine, orange/red when it would hit the limit early. 0% shows it whenever a pace can be measured. Pace alerts additionally wait until at least 30%.")
+                .help("Short windows are the ones a row calls \"5h\" or \"daily\" — Claude's five hours, Manus's daily quota. Show their pace line in the menu once the window is this full: green when the pace is fine, orange/red when it would hit the limit early. 0% shows it whenever a pace can be measured. Pace alerts additionally wait until at least 30%.")
                 HStack {
                     Slider(value: $model.paceWeeklyFloor, in: 0...90, step: 5) {
-                        Text("Weekly pace from")
+                        Text("Long window pace from")
                     }
                     .hapticTick(on: model.paceWeeklyFloor)
                     Text(model.paceWeeklyFloor == 0 ? "always"
@@ -239,7 +258,7 @@ struct PreferencesView: View {
                         .monospacedDigit()
                         .frame(width: 52, alignment: .trailing)
                 }
-                .help("Show the weekly pace line in the menu once the weekly window is this full. Pace alerts additionally wait until at least 30%.")
+                .help("Long windows are the ones a row calls \"weekly\" or \"billing cycle\" — Codex's weekly window, Cursor's monthly billing cycle, and the weekly window Claude publishes alongside its five-hour one. Show their pace line in the menu once the window is this full. Pace alerts additionally wait until at least 30%.")
                 Toggle(isOn: $model.weeklyDigestEnabled) {
                     Text("📊 Weekly summary")
                     Text("One Sunday-evening note: the week's estimated cost, session count, and busiest project.")

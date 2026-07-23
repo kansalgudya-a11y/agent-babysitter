@@ -29,6 +29,8 @@ public struct CursorAdapter: AgentAdapter {
 
     public var stateDBURL: URL { transcriptRoot.appendingPathComponent("state.vscdb") }
 
+    public func usageSourceFile() -> URL? { stateDBURL }
+
     /// Plan tier from Cursor's own state (`cursorAuth/stripeMembershipType`,
     /// verified on a real install). That's ALL Cursor persists about usage —
     /// no percentages exist locally; the real numbers live behind cursor.com

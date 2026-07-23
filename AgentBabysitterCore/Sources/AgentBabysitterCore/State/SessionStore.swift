@@ -104,13 +104,28 @@ public actor SessionStore {
         /// limits still include hidden sessions.
         public var doneAutoHide: TimeInterval?
 
+        /// How long a resolved `usageSourceFile()` is trusted before being
+        /// resolved again. Not free for every adapter (Codex's is a directory
+        /// descent) and the refresh tick is 2s, so this is what keeps a closed
+        /// agent's quota row from costing a directory walk every tick.
+        public var usageSourceRecheck: TimeInterval
+
+        /// Ceiling on how long a cached on-disk reading may be served while
+        /// its source file's mtime is unchanged — the safety net for an mtime
+        /// that can never change again (see `diskUsage(for:source:)`).
+        public var usageRereadInterval: TimeInterval
+
         public init(projectsRoot: URL,
                     stallThreshold: TimeInterval = 300,
                     workingWindow: TimeInterval = 10,
                     activeWindow: TimeInterval = 24 * 3600,
                     precisionModeEnabled: Bool = false,
                     adapters: [any AgentAdapter]? = nil,
-                    doneAutoHide: TimeInterval? = 10 * 60) {
+                    doneAutoHide: TimeInterval? = 10 * 60,
+                    usageSourceRecheck: TimeInterval = 15,
+                    usageRereadInterval: TimeInterval = 600) {
+            self.usageSourceRecheck = usageSourceRecheck
+            self.usageRereadInterval = usageRereadInterval
             self.projectsRoot = projectsRoot
             self.stallThreshold = stallThreshold
             self.workingWindow = workingWindow
@@ -413,39 +428,46 @@ public actor SessionStore {
         return TodayBreakdown(byAgent: byAgent, byProject: byProject, byModel: byModel)
     }
 
-    /// Latest rate-limit reading per agent, newest capture wins. Codex writes
-    /// a real percentage to disk; Antigravity contributes its plan name (from
-    /// the IDE's stored state, no percentage exists locally); Claude Code has
-    /// no on-disk data (the app layer may add a live reading).
+    /// Latest rate-limit reading per agent, newest capture wins. Agents that
+    /// persist an account-wide quota locally (Codex rollouts, Cursor's state
+    /// db, Antigravity's IDE state) fill any id no live session supplies —
+    /// those quotas are account-wide and stay valid for days, so they must
+    /// outlive the 24h active window that drops the session they were written
+    /// in. Claude Code has no on-disk data (the app layer may add a live one).
+    ///
+    /// Gemini is deliberately left with NO snapshot. Its real usage %
+    /// (the numbers on gemini.google.com/usage) is fetched live by the
+    /// Gemini app from Google's servers behind a web login and is never
+    /// written to disk — verified: the desktop app only logs "0 modes
+    /// over quota", and the CLI OAuth token reaches Code Assist (tier
+    /// only, no %). Showing Antigravity's plan tier here was misleading,
+    /// so the UI links straight to the usage page instead.
     public func usageLimits() -> [String: UsageLimitSnapshot] {
         var latest: [String: UsageLimitSnapshot] = [:]
         for (_, tracked) in sessions {
-            guard let limit = tracked.reader.usageLimit else { continue }
+            guard tracked.adapter.publishesUsageLimit,
+                  let limit = tracked.reader.usageLimit else { continue }
             if let existing = latest[tracked.adapter.id],
                existing.capturedAt >= limit.capturedAt { continue }
             latest[tracked.adapter.id] = limit
         }
-        // Antigravity: fill the five-hour quota (and plan) from the IDE state
-        // for every installed surface — the same numbers the app's own Model
-        // Quota page shows, read from disk with zero network. The quota is
-        // account-wide, so it's valid whether or not a session is running.
-        if let usage = antigravityUsage() {
-            for adapter in configuration.adapters
-            where adapter.id.hasPrefix("antigravity") && latest[adapter.id] == nil {
-                latest[adapter.id] = usage
-            }
+        // Fill holes only: a live session's reading always wins, and the guard
+        // runs BEFORE the adapter resolves its source file, so a running agent
+        // costs nothing here.
+        var reachable: Set<String> = []
+        for adapter in configuration.adapters
+        where adapter.publishesUsageLimit && latest[adapter.id] == nil {
+            guard let source = diskUsageSource(for: adapter) else { continue }
+            reachable.insert(source.path)
+            if let usage = diskUsage(for: adapter, source: source) { latest[adapter.id] = usage }
         }
-        // Gemini is deliberately left with NO snapshot. Its real usage %
-        // (the numbers on gemini.google.com/usage) is fetched live by the
-        // Gemini app from Google's servers behind a web login and is never
-        // written to disk — verified: the desktop app only logs "0 modes
-        // over quota", and the CLI OAuth token reaches Code Assist (tier
-        // only, no %). Showing Antigravity's plan tier here was misleading,
-        // so the UI links straight to the usage page instead.
-        // Cursor: plan tier from its own state db (verified: that's all it
-        // persists locally — the % needs the opt-in live fetch, app layer).
-        if latest["cursor"] == nil, let usage = cursorUsage() {
-            latest["cursor"] = usage
+        // Bound the cache to the sources still in play. It is keyed by PATH,
+        // and Codex's path is whichever rollout is newest — a new one per
+        // session — so without this it grows one dead entry per Codex session
+        // for the lifetime of a process that runs for weeks. Dropping an entry
+        // costs at most one re-read the next time that path is resolved.
+        if diskUsageCache.count > reachable.count {
+            diskUsageCache = diskUsageCache.filter { reachable.contains($0.key) }
         }
         return latest
     }
@@ -467,37 +489,61 @@ public actor SessionStore {
         return counts
     }
 
-    private var cursorUsageCache: (mtime: Date, usage: UsageLimitSnapshot?)?
-
-    /// Same mtime-cached copy-and-read as Antigravity below; Cursor's db is
-    /// ~1MB and the 2s tick must not recopy it.
-    private func cursorUsage() -> UsageLimitSnapshot? {
-        guard let adapter = configuration.adapters.first(where: { $0.id == "cursor" })
-                as? CursorAdapter,
-              let mtime = (try? FileManager.default.attributesOfItem(
-                  atPath: adapter.stateDBURL.path))?[.modificationDate] as? Date
-        else { return nil }
-        if let cache = cursorUsageCache, cache.mtime == mtime { return cache.usage }
-        let usage = adapter.usageFromDisk()
-        cursorUsageCache = (mtime, usage)
-        return usage
+    /// Keyed by SOURCE PATH, not adapter id: Antigravity's three surfaces all
+    /// resolve the same shared state.vscdb, so they share one parse (the old
+    /// bespoke fan-out loop's behaviour, preserved). Path+mtime, not mtime
+    /// alone — the caches this replaced keyed on mtime only, a latent bug if a
+    /// root changes under `updateConfiguration(_:)`. Negative results are
+    /// cached too: a missing or corrupt source must cost one stat per tick,
+    /// not one parse.
+    private var diskUsageCache: [String: (mtime: Date, readAt: Date,
+                                          usage: UsageLimitSnapshot?)] = [:]
+    /// Resolved source path per adapter id — see `diskUsageSource(for:)`.
+    private var diskUsageSources: [String: (url: URL?, resolvedAt: Date)] = [:]
+    /// Resolving the source is NOT uniformly cheap: Cursor and Antigravity
+    /// return a constant path, but Codex's is a directory descent (measured on
+    /// the author's archive: ~5 `contentsOfDirectory` calls, 51 stats and a
+    /// 51-element sort, 0.62 ms) and it would otherwise run on every 2s tick
+    /// for as long as Codex is closed — precisely the state this fallback
+    /// exists to serve, and one that lasts days. Re-resolve at most once per
+    /// `configuration.usageSourceRecheck`; the `stat` in `diskUsage` still
+    /// runs every tick, so a CHANGED file is still picked up immediately.
+    private func diskUsageSource(for adapter: any AgentAdapter) -> URL? {
+        let now = Date()
+        if let cached = diskUsageSources[adapter.id],
+           now.timeIntervalSince(cached.resolvedAt) < configuration.usageSourceRecheck,
+           now >= cached.resolvedAt {
+            return cached.url
+        }
+        let url = adapter.usageSourceFile()
+        diskUsageSources[adapter.id] = (url, now)
+        return url
     }
 
-    private var antigravityUsageCache: (mtime: Date, usage: UsageLimitSnapshot?)?
-
-    /// The state file is a few MB of SQLite copied to a temp file to read;
-    /// cache by mtime so the 2s refresh tick doesn't reparse it.
-    private func antigravityUsage() -> UsageLimitSnapshot? {
-        guard configuration.adapters.contains(where: { $0.id.hasPrefix("antigravity") }),
-              let mtime = (try? FileManager.default.attributesOfItem(
-                  atPath: AntigravityAdapter.defaultStateDBURL.path))?[.modificationDate] as? Date
+    /// Reading these sources is expensive — a multi-MB SQLite copy for
+    /// Cursor/Antigravity, tail-reads across many rollouts for Codex — and the
+    /// refresh tick runs every 2s on this actor. The mtime gate keeps the
+    /// steady-state cost at one `stat` plus (at most every 15s) one source
+    /// resolution.
+    ///
+    /// The age ceiling is a safety net for the one way an mtime gate can wedge
+    /// permanently: a file whose mtime is in the future or otherwise frozen
+    /// (restored from backup, synced from another machine, bad clock) would
+    /// otherwise compare equal forever and pin a stale reading on screen with
+    /// no error and no way out. One re-read per 10 minutes is not a cost worth
+    /// defending against.
+    private func diskUsage(for adapter: any AgentAdapter, source: URL) -> UsageLimitSnapshot? {
+        guard let mtime = (try? FileManager.default.attributesOfItem(
+                  atPath: source.path))?[.modificationDate] as? Date
         else { return nil }
-        if let cache = antigravityUsageCache, cache.mtime == mtime { return cache.usage }
-        var usage: UsageLimitSnapshot?
-        for case let adapter as AntigravityAdapter in configuration.adapters {
-            if let found = adapter.usageFromDisk() { usage = found; break }
+        let now = Date()
+        if let cache = diskUsageCache[source.path], cache.mtime == mtime,
+           now.timeIntervalSince(cache.readAt) < configuration.usageRereadInterval,
+           now >= cache.readAt {
+            return cache.usage
         }
-        antigravityUsageCache = (mtime, usage)
+        let usage = adapter.usageFromDisk()
+        diskUsageCache[source.path] = (mtime, now, usage)
         return usage
     }
 

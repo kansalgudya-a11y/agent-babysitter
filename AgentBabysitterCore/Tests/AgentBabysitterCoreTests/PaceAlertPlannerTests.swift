@@ -136,24 +136,55 @@ final class PaceAlertPlannerTests: XCTestCase {
     }
 
     func testUserFloorsGateEachWindowIndependently() {
-        // 60% on a bad 5h pace + 75% weekly on a bad pace. A 70% 5h floor
-        // silences the 5h warning but must leave the weekly one alone.
+        // 60% on a bad 5h pace + 75% weekly on a bad pace. A 70% short-window
+        // floor silences the 5h warning but must leave the weekly one alone.
         let limit = onPace(used: 60, weeklyUsed: 75, weeklyResetsInDays: 2)
         let outcome = PaceAlertPlanner.plan(limits: ["claude-code": limit],
                                             threshold: 80,
-                                            minimumFiveHourPercent: 70,
-                                            minimumWeeklyPercent: 30,
+                                            minimumShortWindowPercent: 70,
+                                            minimumLongWindowPercent: 30,
                                             alertedFiveHour: [:], alertedWeekly: [:],
                                             now: now)
         XCTAssertEqual(outcome.alerts.map(\.isWeekly), [true])
-        // And the mirror: weekly floor above its reading silences weekly only.
+        // And the mirror: long floor above its reading silences weekly only.
         let flipped = PaceAlertPlanner.plan(limits: ["claude-code": limit],
                                             threshold: 80,
-                                            minimumFiveHourPercent: 30,
-                                            minimumWeeklyPercent: 80,
+                                            minimumShortWindowPercent: 30,
+                                            minimumLongWindowPercent: 80,
                                             alertedFiveHour: [:], alertedWeekly: [:],
                                             now: now)
         XCTAssertEqual(flipped.alerts.map(\.isWeekly), [false])
+    }
+
+    /// A LONG primary window (Codex's primary IS the weekly one) must be gated
+    /// by the long floor, the same way the menu's pace line routes it. When
+    /// the planner applied the short floor to every primary regardless of
+    /// length, this exact setup — long floor raised to 90%, short floor left
+    /// at its 30% minimum — showed no pace line in the menu while still firing
+    /// a banner about the weekly limit.
+    func testLongPrimaryWindowIsGatedByTheLongFloor() {
+        // 60% halfway through a 7-day window: the pace crosses 100% about a
+        // day before the reset, so only a floor can silence this.
+        let codexWeekly = UsageLimitSnapshot(
+            usedPercent: 60, windowMinutes: 7 * 24 * 60,
+            resetsAt: now.addingTimeInterval(3.5 * 86_400),
+            capturedAt: now, plan: "prolite")
+        // Silenced by the long floor…
+        XCTAssertTrue(PaceAlertPlanner.plan(limits: ["codex": codexWeekly],
+                                            threshold: 80,
+                                            minimumShortWindowPercent: 30,
+                                            minimumLongWindowPercent: 90,
+                                            alertedFiveHour: [:], alertedWeekly: [:],
+                                            now: now).alerts.isEmpty,
+                      "a 7-day primary must obey the LONG floor, not the short one")
+        // …and audible once the long floor drops below the reading, which
+        // proves the silence above was the floor and not the pace math.
+        XCTAssertEqual(PaceAlertPlanner.plan(limits: ["codex": codexWeekly],
+                                             threshold: 80,
+                                             minimumShortWindowPercent: 90,
+                                             minimumLongWindowPercent: 30,
+                                             alertedFiveHour: [:], alertedWeekly: [:],
+                                             now: now).alerts.map(\.isWeekly), [false])
     }
 
     func testWeeklyWindowLiftsTheWeeklyFields() {

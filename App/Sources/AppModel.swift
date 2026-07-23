@@ -22,6 +22,18 @@ final class AppModel: ObservableObject {
     @Published private(set) var usageLimits: [String: UsageLimitSnapshot] = [:]
     /// Agents whose files exist on this Mac, in display order.
     @Published private(set) var installedAgents: [(id: String, name: String)] = []
+    /// The usage-limits list's agents: installed, minus the ones that record
+    /// no quota anywhere (Hermes, both OpenClaw surfaces — they could only
+    /// ever read "not shared by this app"). Kept separate from
+    /// `installedAgents`, which still drives session rows, cost, drift checks,
+    /// and notification names for every installed agent. Derived rather than
+    /// published: `installedAgents` is already @Published, so SwiftUI
+    /// re-renders on change, and `adapters` is a stored let that is populated
+    /// in the snapshot harness too.
+    var usageAgents: [(id: String, name: String)] {
+        let muted = Set(adapters.filter { !$0.publishesUsageLimit }.map(\.id))
+        return installedAgents.filter { !muted.contains($0.id) }
+    }
     /// Agents with a live process right now — their app/CLI is open.
     @Published private(set) var runningAgentIDs: Set<String> = []
     /// Observed daily cost totals, oldest first, at most 7 days. Accumulated
@@ -60,8 +72,18 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(notifyPace, forKey: "notifyPace") }
     }
     /// "Show pace from N%" — below this the projection is treated as
-    /// early-window noise. Separate knobs for the 5-hour and weekly windows;
-    /// both gate the menu caption and the pace notification alike.
+    /// early-window noise. Two knobs split by window LENGTH, not by agent: the
+    /// first covers windows that refill within a day (Claude's 5 hours, Manus's
+    /// daily quota), the second a week or more (Codex weekly, Cursor's billing
+    /// cycle, and any agent's secondary weekly window). The stored keys keep
+    /// their original names so existing preferences survive.
+    /// Both gate the menu caption and the pace notification alike, and both
+    /// route a window the SAME way — through `UsageWindowName.isLong`, the
+    /// boundary the row's own caption is named from. They used to disagree:
+    /// `PaceAlertPlanner` applied the short floor to every primary window
+    /// whatever its length, so on Codex (whose primary IS the weekly window) a
+    /// long floor of 90% with a short floor of 0% silenced the menu's pace
+    /// line at 45% while the banner still fired.
     @Published var paceFiveHourFloor: Double {
         didSet { UserDefaults.standard.set(paceFiveHourFloor, forKey: "paceFiveHourFloor") }
     }
@@ -226,7 +248,10 @@ final class AppModel: ObservableObject {
             if menuBarStyle != oldValue { rebuildSparkline() }
         }
     }
-    /// Hottest pace-corrected 5h usage across agents, for the "limit" style.
+    /// Hottest pace-corrected usage across agents' PRIMARY windows, for the
+    /// "limit" menu-bar style — whatever length each window is (Codex's weekly
+    /// one usually wins on this author's machine), so the label that describes
+    /// it must not name a window either.
     @Published private(set) var hottestLimitPercent: Double?
     @Published var launchAtLogin: Bool {
         didSet {
@@ -1305,8 +1330,8 @@ final class AppModel: ObservableObject {
                                             // No reactive alert to hand off to → pace covers the
                                             // whole band up to 100% (unbounded, not a 101 sentinel).
                                             threshold: notifyLimit ? limitAlertThreshold : .infinity,
-                                            minimumFiveHourPercent: max(PaceAlertPlanner.minimumUsedPercent, paceFiveHourFloor),
-                                            minimumWeeklyPercent: max(PaceAlertPlanner.minimumUsedPercent, paceWeeklyFloor),
+                                            minimumShortWindowPercent: max(PaceAlertPlanner.minimumUsedPercent, paceFiveHourFloor),
+                                            minimumLongWindowPercent: max(PaceAlertPlanner.minimumUsedPercent, paceWeeklyFloor),
                                             alertedFiveHour: paceAlertedFiveHour,
                                             alertedWeekly: paceAlertedWeekly)
         persistAlerted(outcome.alertedFiveHour, into: &paceAlertedFiveHour,

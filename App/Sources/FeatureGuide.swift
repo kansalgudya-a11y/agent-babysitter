@@ -44,18 +44,35 @@ enum FeatureGuide {
                 detail: "An optional toggle uses Claude's own notifications so \"needs you\" and \"done\" are exact instead of inferred. One reversible entry in Claude's settings — nothing else touched."),
         ]),
         Section(name: "Limits & forecasting", tips: [
+            // Names the feature, so it can't be window-specific: each agent
+            // meters a different window (Claude 5 hours, Codex a week, Cursor
+            // a billing cycle, Manus a day).
+            //
+            // The window-naming claim is scoped to the rows that actually
+            // carry a name on screen. A live 5-hour row deliberately doesn't
+            // (see MenuContent.limitCaption: a tag is noise on a window that
+            // refills before your coffee, and its reset clock already says as
+            // much), so "every row names its own window" was advertising
+            // something the user could see wasn't happening.
             Tip(version: "0.2.0", symbol: "gauge.with.needle",
-                title: "Real 5-hour limits, 0–100",
-                detail: "Each agent's bar comes from its own data: Codex writes it to disk, Claude via the offline meter or opt-in live check, Antigravity from its synced account state. Never guessed."),
+                title: "Real usage limits, 0–100",
+                detail: "Each agent's bar comes from its own data: Codex writes it to disk, Claude via the offline meter or opt-in live check, Antigravity from its synced account state. Every row shows when it resets, and the longer windows say which one they are — Codex's weekly, Cursor's billing cycle, Manus's daily. Never guessed."),
             Tip(version: "0.3.0", symbol: "chart.line.uptrend.xyaxis",
                 title: "Pace forecasting",
                 detail: "Readings age between turns, so stale numbers are corrected (\"≈9%\") — and when your pace will exhaust the window before it resets, the row warns you how early."),
+            // The quoted string must match what MenuContent actually renders:
+            // this said "week 23%" while the row said "weekly 23%", so the
+            // guide documented both names for one window.
             Tip(version: "0.3.0", symbol: "calendar",
                 title: "Weekly windows too",
-                detail: "\"week 23%\" under each bar where the agent publishes it, coloring up as it fills."),
+                detail: "\"weekly 23%\" under each bar where the agent publishes a second, 7-day window, coloring up as it fills."),
+            // Title and detail describe the same rule, and both match the
+            // menu's own control ("Show fewer" / "Show all") — the list stopped
+            // being open-apps-only when a closed agent's account quota earned
+            // its place in it.
             Tip(version: "0.2.0", symbol: "rectangle.expand.vertical",
-                title: "Open apps by default, everything on demand",
-                detail: "The limits list shows agents that are open right now; \"Show all\" expands to every installed agent with its last known reading."),
+                title: "Open apps and current readings by default",
+                detail: "The limits list shows agents that are open right now, plus any agent holding a reading it can still speak about — dimmed, with how old it is; \"Show all\" expands to every installed agent that reports one."),
         ]),
         Section(name: "Notifications", tips: [
             Tip(version: "0.1.0", symbol: "bell",

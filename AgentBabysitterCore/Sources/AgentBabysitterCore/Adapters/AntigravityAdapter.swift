@@ -129,14 +129,24 @@ public struct AntigravityAdapter: AgentAdapter {
     /// Shared account-state file all surfaces sync to.
     public static let defaultStateDBURL = PlatformPaths.applicationSupport("Antigravity IDE/User/globalStorage/state.vscdb")
 
+    /// Every surface resolves the SAME shared file, which is what lets the
+    /// store parse it once and fan the one reading out to all three ids.
+    public func usageSourceFile() -> URL? { Self.defaultStateDBURL }
+
+    /// Protocol witness for the injectable reader below. A method with a
+    /// defaulted parameter cannot witness a zero-parameter requirement, so the
+    /// injection point keeps its explicit argument and this forwards the live
+    /// path — no default value on both, which would be an ambiguous overload.
+    public func usageFromDisk() -> UsageLimitSnapshot? {
+        usageFromDisk(appSupport: PlatformPaths.applicationSupport)
+    }
+
     /// Account status from the Antigravity IDE's stored state: plan tier
     /// ("Google AI Pro") plus the five-hour quota used % and reset time that
     /// the app's own Model Quota page displays. `capturedAt` is the state
     /// file's mtime so staleness is honest. Returns nil when the IDE isn't
     /// installed or the state can't be read.
-    public func usageFromDisk(
-        appSupport: URL = PlatformPaths.applicationSupport
-    ) -> UsageLimitSnapshot? {
+    public func usageFromDisk(appSupport: URL) -> UsageLimitSnapshot? {
         let db = appSupport.path == PlatformPaths.applicationSupport.path
             ? Self.defaultStateDBURL
             : appSupport.appendingPathComponent("Antigravity IDE/User/globalStorage/state.vscdb")

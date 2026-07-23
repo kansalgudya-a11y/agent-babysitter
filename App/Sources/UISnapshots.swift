@@ -94,7 +94,8 @@ enum UISnapshots {
         }
 
         func limit(_ used: Double?, plan: String?, resetsInMinutes: Double = 135,
-                   weekly: Double? = nil, live: Bool = false,
+                   weekly: Double? = nil, weeklyResetsInDays: Double = 3.4,
+                   live: Bool = false,
                    capturedMinutesAgo: Double = 2,
                    windowMinutes: Int = 300) -> UsageLimitSnapshot {
             UsageLimitSnapshot(usedPercent: used, windowMinutes: windowMinutes,
@@ -102,7 +103,7 @@ enum UISnapshots {
                                capturedAt: now.addingTimeInterval(-capturedMinutesAgo * 60),
                                plan: plan,
                                isLive: live, weeklyUsedPercent: weekly,
-                               weeklyResetsAt: now.addingTimeInterval(3.4 * 86_400))
+                               weeklyResetsAt: now.addingTimeInterval(weeklyResetsInDays * 86_400))
         }
 
         let allInstalled = [("claude-code", "Claude Code"), ("codex", "Codex"),
@@ -222,6 +223,203 @@ enum UISnapshots {
                               "cursor": limit(nil, plan: "Free")],
                 installedAgents: allInstalled + [("cursor", "Cursor")],
                 runningAgentIDs: ["cursor"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // The reported bug, exactly: Codex CLOSED, its newest rollout ~24.5h
+        // old (so the session has aged out of the store's active window) and
+        // the weekly quota read straight off disk. Without toggling "Show all"
+        // the row must be present, dimmed, and answer "how much is left and
+        // when does it reset". Hermes and OpenClaw are installed here and must
+        // be ABSENT from this list — they record no quota anywhere.
+        menu("menu-codex-weekly-closed") { model in
+            model.applyFixture(
+                rows: [row("a", "checkout-service", .working, dollars: 6.20)],
+                summary: MenuBarSummary(worstState: .working, activeCount: 1),
+                usageLimits: ["codex": limit(24, plan: "prolite",
+                                             resetsInMinutes: 5 * 24 * 60 + 17 * 60,
+                                             capturedMinutesAgo: 1474,
+                                             windowMinutes: 10080)],
+                installedAgents: allInstalled + [("hermes", "Hermes"),
+                                                 ("openclaw", "OpenClaw")],
+                runningAgentIDs: ["claude-code"],
+                todayCost: SessionCost(dollars: 6.20), costHistory: history)
+        }
+
+        // Antigravity's three surfaces read ONE shared account quota, so the
+        // store hands the identical snapshot to all three ids. With the IDE
+        // closed, the collapsed list must show that fact ONCE — three
+        // identical "Antigravity 12%" rows is what admitting each surface on
+        // its own reading would produce.
+        menu("menu-shared-quota-once") { model in
+            let shared = limit(12, plan: "Google AI Pro", capturedMinutesAgo: 90)
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: ["antigravity": shared, "antigravity-ide": shared,
+                              "antigravity-cli": shared],
+                installedAgents: allInstalled,
+                runningAgentIDs: [],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // The SAME shared quota with a RUNNING sibling — the one configuration
+        // the fixture above cannot catch, and where the de-dup regressed: the
+        // closed umbrella ("antigravity") sorts BEFORE the running IDE
+        // ("antigravity-ide"), so a single forward pass let it claim the
+        // reading, admitted it, and then appended the running row anyway —
+        // "Antigravity 12%" and "Antigravity IDE 12%", the same fact twice.
+        // This is the user's real setup: all three ~/.gemini/antigravity*
+        // directories exist, and the IDE is routinely open with the desktop
+        // app closed. Exactly ONE Antigravity row, and it must be the running
+        // one (the row you can act on).
+        menu("menu-shared-quota-running-sibling") { model in
+            let shared = limit(12, plan: "Google AI Pro", capturedMinutesAgo: 90)
+            model.applyFixture(
+                rows: [row("a", "#a84b4e9f", .working,
+                           agent: ("antigravity-ide", "Antigravity IDE"),
+                           entrypoint: "Antigravity IDE")],
+                summary: MenuBarSummary(worstState: .working, activeCount: 1),
+                usageLimits: ["antigravity": shared, "antigravity-ide": shared,
+                              "antigravity-cli": shared],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["antigravity-ide"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // The SAME shared quota with the sort order REVERSED: the running
+        // surface is the umbrella ("antigravity", order 4) and the closed
+        // siblings sort AFTER it. De-dup must not depend on which direction
+        // the running row happens to sit in — one row here too, and it is
+        // "Antigravity".
+        menu("menu-shared-quota-umbrella-running") { model in
+            let shared = limit(12, plan: "Google AI Pro", capturedMinutesAgo: 90)
+            model.applyFixture(
+                rows: [row("a", "#a84b4e9f", .working,
+                           agent: ("antigravity", "Antigravity"),
+                           entrypoint: "Antigravity")],
+                summary: MenuBarSummary(worstState: .working, activeCount: 1),
+                usageLimits: ["antigravity": shared, "antigravity-ide": shared,
+                              "antigravity-cli": shared],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["antigravity"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // BOTH surfaces open at once — the configuration neither fixture above
+        // covers, and the one the de-dup rule used to print twice: "Antigravity
+        // 12%" directly above "Antigravity IDE 12%", one account's reading
+        // drawn as two bars. Exactly ONE row, and it keeps full opacity
+        // because the surviving surface is open.
+        menu("menu-shared-quota-both-running") { model in
+            let shared = limit(12, plan: "Google AI Pro", capturedMinutesAgo: 90)
+            model.applyFixture(
+                rows: [row("a", "#a84b4e9f", .working,
+                           agent: ("antigravity", "Antigravity"),
+                           entrypoint: "Antigravity"),
+                       row("b", "#03460a7f", .working,
+                           agent: ("antigravity-ide", "Antigravity IDE"),
+                           entrypoint: "Antigravity IDE")],
+                summary: MenuBarSummary(worstState: .working, activeCount: 2),
+                usageLimits: ["antigravity": shared, "antigravity-ide": shared,
+                              "antigravity-cli": shared],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["antigravity", "antigravity-ide"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // A secondary weekly window that has ALREADY rolled over, on a row
+        // whose primary (a 30-day billing cycle) has not. The row is entitled
+        // to state its primary, but the weekly number behind it is dead — so
+        // the caption must carry NO "weekly 23%" piece, and neither must the
+        // tooltip. Before this, a row could read "billing cycle · 58% left ·
+        // resets in 11d 23h · weekly 23%" with the weekly figure days stale.
+        menu("menu-secondary-weekly-rolled-over") { model in
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: ["cursor": limit(42, plan: "Pro",
+                                              resetsInMinutes: 12 * 24 * 60,
+                                              weekly: 23, weeklyResetsInDays: -1.5,
+                                              live: true, windowMinutes: 30 * 24 * 60),
+                              // The control, one row above: same secondary
+                              // window, still live, still captioned.
+                              "claude-code": limit(43, plan: "pro", weekly: 23, live: true)],
+                installedAgents: allInstalled + [("cursor", "Cursor")],
+                runningAgentIDs: ["claude-code"],
+                todayCost: SessionCost(dollars: 18.15), costHistory: history)
+        }
+
+        // De-dup is a DEFAULT-LIST rule, not a filter: "Show all" over the
+        // same shared quota must still list every surface separately, so the
+        // user can see which surfaces exist and that they read one account.
+        menu("menu-shared-quota-show-all", showAll: true) { model in
+            let shared = limit(12, plan: "Google AI Pro", capturedMinutesAgo: 90)
+            model.applyFixture(
+                rows: [row("a", "#a84b4e9f", .working,
+                           agent: ("antigravity-ide", "Antigravity IDE"),
+                           entrypoint: "Antigravity IDE")],
+                summary: MenuBarSummary(worstState: .working, activeCount: 1),
+                usageLimits: ["antigravity": shared, "antigravity-ide": shared,
+                              "antigravity-cli": shared],
+                installedAgents: allInstalled,
+                runningAgentIDs: ["antigravity-ide"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // A genuine 0% is a reading, not a gap: "0%" with "weekly · 100% left",
+        // never "no recent reading" and never the "0% used 100% left 0%" mush.
+        menu("menu-codex-zero-percent") { model in
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: ["codex": limit(0, plan: "prolite",
+                                             resetsInMinutes: 6 * 24 * 60,
+                                             windowMinutes: 10080)],
+                installedAgents: allInstalled,
+                runningAgentIDs: [],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // Rolled-over weekly window: the row shows neither a percentage nor a
+        // "% left" — there is nothing left to report until it refills — only
+        // which window reset. Hermes and OpenClaw are installed and this is
+        // the FULLY EXPANDED list, so their absence here is the proof that
+        // they're excluded rather than merely hidden: neither records a quota
+        // anywhere.
+        menu("menu-codex-reset", showAll: true) { model in
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: ["codex": limit(88, plan: "prolite",
+                                             resetsInMinutes: -90,
+                                             capturedMinutesAgo: 200,
+                                             windowMinutes: 10080)],
+                installedAgents: allInstalled + [("hermes", "Hermes"),
+                                                 ("openclaw", "OpenClaw"),
+                                                 ("openclaw-sdk", "OpenClaw SDK")],
+                runningAgentIDs: ["hermes"],
+                todayCost: SessionCost(), costHistory: [])
+        }
+
+        // Rollover while Codex is still CLOSED — the moment the disk-quota fix
+        // used to expire. The row must KEEP its place in the COLLAPSED list
+        // (no "Show all") and say what happened: empty bar, "reset", and
+        // "weekly · window reset · as of 5d ago". Vanishing here would have
+        // stranded exactly the offline user the fix was for. The second
+        // reading is the aged-out case in the same list: its window rolled
+        // over 9 days ago, so a whole further weekly window has passed with no
+        // evidence about the current one — that row is gone until Antigravity
+        // runs again, or until "Show all".
+        menu("menu-window-rolled-over-closed") { model in
+            model.applyFixture(
+                rows: [], summary: MenuBarSummary(worstState: nil, activeCount: 0),
+                usageLimits: ["codex": limit(24, plan: "prolite",
+                                             resetsInMinutes: -40,
+                                             capturedMinutesAgo: 5 * 24 * 60,
+                                             windowMinutes: 10080),
+                              "antigravity": limit(65, plan: "Google AI Pro",
+                                                   resetsInMinutes: -9 * 24 * 60,
+                                                   capturedMinutesAgo: 16 * 24 * 60,
+                                                   windowMinutes: 10080)],
+                installedAgents: allInstalled,
+                runningAgentIDs: [],
                 todayCost: SessionCost(), costHistory: [])
         }
 

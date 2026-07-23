@@ -83,6 +83,24 @@ public protocol AgentAdapter: Sendable {
     /// `recentTranscripts`, not the file path, and the store rediscovers
     /// sessions whenever the shared file changes.
     var multiSessionFiles: Bool { get }
+    /// True when this agent can publish a subscription usage reading (parsed
+    /// from its data or read from disk). False for agents that record no quota
+    /// anywhere — they stay fully tracked (sessions, tokens, cost,
+    /// notifications, drift checks) but are omitted from the usage-limits list
+    /// rather than shown forever as "not shared by this app".
+    var publishesUsageLimit: Bool { get }
+    /// The file whose modification time gates a re-read of `usageFromDisk()`.
+    /// nil when the adapter publishes no on-disk quota.
+    ///
+    /// It may cost a small directory descent (Codex has to find its newest
+    /// rollout) but not a parse: the store re-resolves it at most every few
+    /// seconds and then `stat`s the result on every 2s refresh tick, on its
+    /// own executor.
+    func usageSourceFile() -> URL?
+    /// The account-wide quota this agent persists locally. Deliberately
+    /// independent of any tracked session: a weekly quota is true whether or
+    /// not the app is open, so it must outlive the store's 24h active window.
+    func usageFromDisk() -> UsageLimitSnapshot?
     /// Reader for a specific session id inside a multi-session file.
     /// Defaults to the per-file reader.
     func makeReader(url: URL, sessionID: String) -> any SessionReading
@@ -114,6 +132,15 @@ public extension AgentAdapter {
     var usesNetworkActivity: Bool { false }
 
     var multiSessionFiles: Bool { false }
+
+    /// Defaults TRUE on purpose: a new adapter that does publish a reading
+    /// must never have it silently dropped. The cost of the wrong default is
+    /// a visible "not shared by this app" row until someone sets the flag.
+    var publishesUsageLimit: Bool { true }
+
+    func usageSourceFile() -> URL? { nil }
+
+    func usageFromDisk() -> UsageLimitSnapshot? { nil }
 
     func makeReader(url: URL, sessionID: String) -> any SessionReading {
         makeReader(url: url)

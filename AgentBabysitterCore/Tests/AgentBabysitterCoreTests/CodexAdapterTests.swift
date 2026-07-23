@@ -290,3 +290,484 @@ extension CodexAdapterTests {
         XCTAssertEqual(CodexAdapter().agentPIDs(psComm: comm, psArgs: ""), [100, 400])
     }
 }
+
+// MARK: - Usage (quota buckets + the session-independent disk read)
+
+/// Codex publishes several quota buckets under `rate_limits`, keyed by
+/// `limit_id`, and its weekly quota outlives the session that recorded it.
+/// Shapes here are the ones verified on a real install 2026-07-22: a plan-wide
+/// bucket (`limit_name` absent/null) at 24% and a model-scoped
+/// "GPT-5.3-Codex-Spark" bucket at 0%, both on a 10080-minute primary window
+/// with a null secondary.
+final class CodexUsageTests: XCTestCase {
+
+    private func makeRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-usage-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    /// One `token_count` line carrying a rate_limits bucket. `limitName` nil
+    /// omits the key entirely (the fixture's shape); "" writes an explicit
+    /// JSON null (the shape on disk today).
+    private func usageLine(percent: Double, limitID: String = "codex",
+                           limitName: String? = nil,
+                           windowMinutes: Int = 10080,
+                           resetsIn: TimeInterval = 6 * 86_400,
+                           plan: String = "prolite",
+                           at timestamp: Date? = Date(),
+                           tokens: Int = 1000) -> String {
+        let name = limitName.map { $0.isEmpty ? "null" : "\"\($0)\"" } ?? "null"
+        let resets = Date().addingTimeInterval(resetsIn).timeIntervalSince1970
+        let stamp = timestamp.map {
+            "\"timestamp\":\"\($0.ISO8601Format(.iso8601(timeZone: .gmt).year().month().day().timeZone(separator: .omitted).time(includingFractionalSeconds: true)))\","
+        } ?? ""
+        return """
+        {\(stamp)"type":"event_msg","payload":{"type":"token_count",\
+        "info":{"total_token_usage":{"input_tokens":\(tokens),"cached_input_tokens":0,\
+        "output_tokens":10,"total_tokens":\(tokens + 10)}},\
+        "rate_limits":{"limit_id":"\(limitID)","limit_name":\(name),\
+        "primary":{"used_percent":\(percent),"window_minutes":\(windowMinutes),\
+        "resets_at":\(resets)},"secondary":null,"plan_type":"\(plan)"}}}
+        """
+    }
+
+    @discardableResult
+    private func writeRollout(in root: URL, day: String = "2026/07/22",
+                              stem: String = "rollout-2026-07-22T12-15-56",
+                              lines: [String], age: TimeInterval = 0) throws -> URL {
+        let dir = root.appendingPathComponent(day)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(
+            "\(stem)-\(UUID().uuidString.lowercased()).jsonl")
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: false,
+                                                         encoding: .utf8)
+        if age > 0 {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSinceNow: -age)], ofItemAtPath: url.path)
+        }
+        return url
+    }
+
+    // MARK: - Bucket selection
+
+    /// The currently-SHIPPING bug in the live reader path: the tailer keeps the
+    /// last reading it sees, and on real rollouts the session switches models
+    /// mid-file, so a trailing Spark 0% discards the plan's own 24%.
+    func testPlanWideBucketBeatsModelScopedWithinAFile() throws {
+        let root = try makeRoot()
+        let url = try writeRollout(in: root, lines: [
+            usageLine(percent: 24),
+            usageLine(percent: 0, limitID: "codex_bengalfox",
+                      limitName: "GPT-5.3-Codex-Spark"),
+        ])
+        let reader = CodexAdapter(transcriptRoot: root).makeReader(url: url)
+        try reader.refresh()
+        XCTAssertEqual(reader.usageLimit?.usedPercent, 24.0,
+                       "the model-scoped bucket must not mask the plan-wide one")
+        XCTAssertEqual(reader.usageLimit?.windowMinutes, 10080)
+    }
+
+    /// A rollout with nothing but model-scoped readings has no plan-wide quota
+    /// to report — and rejecting the limit must not disturb token accounting,
+    /// which rides on the same lines.
+    func testModelScopedOnlyYieldsNoSnapshot() throws {
+        let root = try makeRoot()
+        let url = try writeRollout(in: root, lines: [
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5.5\",\"cwd\":\"/w\"}}",
+            usageLine(percent: 7, limitID: "codex_bengalfox",
+                      limitName: "GPT-5.3-Codex-Spark", tokens: 4000),
+        ])
+        let reader = CodexAdapter(transcriptRoot: root).makeReader(url: url)
+        try reader.refresh()
+        XCTAssertNil(reader.usageLimit)
+        XCTAssertEqual(reader.cost.inputTokens, 4000, "tokens are unaffected by the limit filter")
+        XCTAssertEqual(reader.cost.outputTokens, 10)
+    }
+
+    /// Back-compat for the new predicate: both an ABSENT `limit_name` (the
+    /// shape in Fixtures/codex_turn.jsonl) and an explicit JSON null (the shape
+    /// on disk today, which bridges to NSNull) mean plan-wide.
+    func testMissingOrNullLimitNameStillParses() throws {
+        let root = try makeRoot()
+        let absent = try writeRollout(in: root, lines: [
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{},\"rate_limits\":{\"limit_id\":\"codex\",\"primary\":{\"used_percent\":31.0,\"window_minutes\":10080,\"resets_at\":\(Date().addingTimeInterval(86_400).timeIntervalSince1970)},\"plan_type\":\"plus\"}}}",
+        ])
+        let explicitNull = try writeRollout(in: root, lines: [usageLine(percent: 12)])
+        let adapter = CodexAdapter(transcriptRoot: root)
+
+        let absentReader = adapter.makeReader(url: absent)
+        try absentReader.refresh()
+        XCTAssertEqual(absentReader.usageLimit?.usedPercent, 31.0)
+
+        let nullReader = adapter.makeReader(url: explicitNull)
+        try nullReader.refresh()
+        XCTAssertEqual(nullReader.usageLimit?.usedPercent, 12.0)
+    }
+
+    /// A genuine 0% is a reading, not a gap. Nothing in this path may gate on
+    /// truthiness — the menu branches on nil, not on falsiness, and collapsing
+    /// the two would render an untouched quota as "no recent reading".
+    func testZeroPercentIsARealReading() throws {
+        let root = try makeRoot()
+        let url = try writeRollout(in: root, lines: [usageLine(percent: 0)])
+        let adapter = CodexAdapter(transcriptRoot: root)
+
+        let reader = adapter.makeReader(url: url)
+        try reader.refresh()
+        XCTAssertEqual(reader.usageLimit?.usedPercent, 0)
+        XCTAssertNotNil(reader.usageLimit?.usedPercent)
+
+        let fromDisk = adapter.usageFromDisk()
+        XCTAssertEqual(fromDisk?.usedPercent, 0)
+        XCTAssertNotNil(fromDisk?.usedPercent)
+    }
+
+    // MARK: - The disk read
+
+    /// Today's disk, reproduced: the NEWER file ends on a Spark 0% and the
+    /// plan's real 24% lives in the file written 16 seconds earlier. Stopping
+    /// at the newest file — or at the first file with any reading — renders a
+    /// confident, wrong 0%.
+    func testUsageFromDiskPrefersPlanWideAcrossFiles() throws {
+        let root = try makeRoot()
+        try writeRollout(in: root, stem: "rollout-2026-07-22T12-15-30",
+                         lines: [usageLine(percent: 24)], age: 16)
+        try writeRollout(in: root, stem: "rollout-2026-07-22T12-15-56",
+                         lines: [usageLine(percent: 0, limitID: "codex_bengalfox",
+                                           limitName: "GPT-5.3-Codex-Spark")])
+
+        let usage = CodexAdapter(transcriptRoot: root).usageFromDisk()
+        XCTAssertEqual(usage?.usedPercent, 24.0)
+        XCTAssertEqual(usage?.windowMinutes, 10080)
+        XCTAssertEqual(usage?.plan, "prolite")
+    }
+
+    /// THE reported bug. The rollout is older than the store's active window,
+    /// so its session is correctly gone — but the weekly quota it recorded is
+    /// valid for days yet, and must still reach the menu. Also the first test
+    /// anywhere covering the store's disk-fallback WIRING for any agent.
+    func testCodexUsageSurvivesSessionAgingOutOfActiveWindow() async throws {
+        let root = try makeRoot()
+        try writeRollout(in: root, lines: [
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"019f8892-e6cc-7643-a1ff-cdb7bcda6b26\",\"cwd\":\"/w\"}}",
+            usageLine(percent: 24),
+        ], age: 25 * 3600)
+
+        let store = SessionStore(configuration: .init(
+            projectsRoot: root,  // unused: adapters override
+            adapters: [CodexAdapter(transcriptRoot: root)]))
+        await store.bootstrap()
+
+        let rows = await store.rows()
+        XCTAssertTrue(rows.isEmpty, "the session itself correctly aged out")
+        let limits = await store.usageLimits()
+        XCTAssertEqual(limits["codex"]?.usedPercent, 24.0, "the quota outlives the session")
+        XCTAssertEqual(limits["codex"]?.windowMinutes, 10080)
+    }
+
+    /// Fill-the-hole, matching the Cursor precedent: a live session's reading
+    /// always wins, and the guard runs before the adapter is ever asked for its
+    /// source file, so a running Codex never pays for the scan.
+    func testLiveSessionReadingWinsOverDiskFallback() async throws {
+        let root = try makeRoot()
+        try writeRollout(in: root, stem: "rollout-2026-07-21T09-00-00",
+                         lines: [usageLine(percent: 24)], age: 25 * 3600)
+        try writeRollout(in: root, stem: "rollout-2026-07-23T09-00-00",
+                         lines: [usageLine(percent: 40)])
+
+        let store = SessionStore(configuration: .init(
+            projectsRoot: root, adapters: [CodexAdapter(transcriptRoot: root)]))
+        await store.bootstrap()
+        let limits = await store.usageLimits()
+        XCTAssertEqual(limits["codex"]?.usedPercent, 40.0)
+    }
+
+    /// `capturedAt` drives both `UsageLimitLayering` precedence and
+    /// `UsageForecast`'s 1h staleness ceiling, so it must be the event's own
+    /// timestamp — never `Date()` — and never ahead of the file that holds it.
+    func testCapturedAtIsEventTimestampClampedToFileMTime() throws {
+        let root = try makeRoot()
+        let stamp = Date().addingTimeInterval(-26 * 3600)
+        try writeRollout(in: root, lines: [usageLine(percent: 24, at: stamp)],
+                         age: 25 * 3600)
+        let dated = try XCTUnwrap(CodexAdapter(transcriptRoot: root).usageFromDisk())
+        XCTAssertEqual(dated.capturedAt.timeIntervalSince1970,
+                       stamp.timeIntervalSince1970, accuracy: 1,
+                       "the line's own timestamp, not the file mtime and not now")
+        XCTAssertNil(UsageForecast.estimatedCurrentPercent(dated),
+                     "a day-old reading must not extrapolate to a false ~100%")
+
+        // No timestamp on the line: fall back to the file's mtime, which is
+        // still honestly old — not to now, which would revive the forecast.
+        let bare = try makeRoot()
+        try writeRollout(in: bare, lines: [usageLine(percent: 24, at: nil)],
+                         age: 25 * 3600)
+        let undated = try XCTUnwrap(CodexAdapter(transcriptRoot: bare).usageFromDisk())
+        XCTAssertEqual(undated.capturedAt.timeIntervalSinceNow, -25 * 3600, accuracy: 60)
+        XCTAssertNil(UsageForecast.estimatedCurrentPercent(undated))
+    }
+
+    /// Rollouts are read from their tail because whole-file parsing is
+    /// impossible at this size — so the tail logic has to survive the giant
+    /// lines that make it necessary.
+    func testTailReadFindsAReadingBehindHugeLines() throws {
+        let junk = String(repeating: "x", count: 200_000)
+        func junkLine(_ size: Int) -> String {
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"\(String(repeating: "y", count: size))\"}]}}"
+        }
+
+        // (a) a multi-megabyte line BEFORE the reading is simply skipped.
+        let a = try makeRoot()
+        try writeRollout(in: a, lines: [junkLine(2_000_000), usageLine(percent: 24)])
+        XCTAssertEqual(CodexAdapter(transcriptRoot: a).usageFromDisk()?.usedPercent, 24.0)
+
+        // (b) the reading sits behind a line longer than the 64 KB window, so
+        // the first slice lands entirely inside it — the 4 MB escalation finds it.
+        let b = try makeRoot()
+        try writeRollout(in: b, lines: [usageLine(percent: 24), junkLine(400_000)])
+        XCTAssertEqual(CodexAdapter(transcriptRoot: b).usageFromDisk()?.usedPercent, 24.0)
+
+        // (c) a truncated trailing fragment must not make the leading-fragment
+        // discard swallow the valid line before it.
+        let c = try makeRoot()
+        let cURL = try writeRollout(in: c, lines: [junk, usageLine(percent: 24)])
+        let handle = try FileHandle(forWritingTo: cURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"type\":\"event_msg\",\"payl".utf8))
+        try handle.close()
+        XCTAssertEqual(CodexAdapter(transcriptRoot: c).usageFromDisk()?.usedPercent, 24.0)
+
+        // (d) a reading further than the escalation window from EOF simply
+        // contributes nothing — an older reading, never a wrong one.
+        let d = try makeRoot()
+        try writeRollout(in: d, lines: [usageLine(percent: 24), junkLine(5_000_000)])
+        XCTAssertNil(CodexAdapter(transcriptRoot: d).usageFromDisk())
+
+        // (e) the case the old "did we parse ANY line" escalation missed: the
+        // 64 KB slice parses perfectly and is full of model-scoped buckets,
+        // while the plan's own reading sits a few hundred KB back behind
+        // ordinary-sized lines. Escalation has to be driven by "no plan-wide
+        // reading", not by "no lines".
+        let e = try makeRoot()
+        try writeRollout(in: e, lines: [usageLine(percent: 24)]
+            + (0..<40).map { _ in junkLine(20_000) }
+            + (0..<8).map { _ in usageLine(percent: 0, limitID: "codex_bengalfox",
+                                           limitName: "GPT-5.3-Codex-Spark") })
+        XCTAssertEqual(CodexAdapter(transcriptRoot: e).usageFromDisk()?.usedPercent, 24.0,
+                       "a plan-wide reading past the 64 KB window must not be dropped "
+                       + "just because the window itself parsed cleanly")
+    }
+
+    /// The shape of the author's real archive 2026-07-22: the newest rollouts
+    /// spent their final hours on a model-scoped allowance, so their tails
+    /// carry no plan-wide reading at all. Recall across rollouts — not a wider
+    /// window, which would have to reach 300 MB back — is what keeps the row
+    /// from going blank.
+    func testRecallSurvivesManyModelScopedOnlyRollouts() throws {
+        let root = try makeRoot()
+        // Oldest file (highest age) holds the only plan-wide reading.
+        try writeRollout(in: root, stem: "rollout-2026-07-22T00-00-00",
+                         lines: [usageLine(percent: 24)], age: 20 * 3600)
+        for index in 1...15 {
+            try writeRollout(in: root, stem: "rollout-2026-07-22T\(index)-00-00",
+                             lines: [usageLine(percent: 0, limitID: "codex_bengalfox",
+                                               limitName: "GPT-5.3-Codex-Spark")],
+                             age: Double(20 * 3600 - index * 600))
+        }
+        let usage = CodexAdapter(transcriptRoot: root).usageFromDisk()
+        XCTAssertEqual(usage?.usedPercent, 24.0,
+                       "15 model-scoped-only rollouts must not bury the plan's reading")
+    }
+
+    /// An unrecognized layout (no YYYY directories) must still find rollouts:
+    /// a future Codex layout change has to degrade to "slower and
+    /// approximate", never to "silently nothing".
+    func testUnrecognizedLayoutStillFindsRollouts() throws {
+        let root = try makeRoot()
+        try writeRollout(in: root, day: "archive/old", lines: [usageLine(percent: 33)])
+        let adapter = CodexAdapter(transcriptRoot: root)
+        XCTAssertEqual(adapter.usageFromDisk()?.usedPercent, 33.0)
+        XCTAssertNotNil(adapter.usageSourceFile())
+    }
+
+    /// …and must do it under a cap. `days.isEmpty` is true on EVERY call in
+    /// that state and Codex never prunes, so an uncapped rescue walk would be
+    /// a full archive traversal on every refresh. The previous version of this
+    /// test wrote ONE rollout and asserted it was found, which the cap cannot
+    /// fail; the budget is injected here so the break is actually taken
+    /// without materializing thousands of files.
+    func testRescueScanStopsAtItsEntryBudget() throws {
+        let root = try makeRoot()
+        for index in 0..<40 {
+            try writeRollout(in: root, day: "archive/old",
+                             stem: "rollout-unrecognized-\(index)",
+                             lines: [usageLine(percent: 33)])
+        }
+        let adapter = CodexAdapter(transcriptRoot: root)
+        // 40 rollouts on disk, a budget of 6 entries: the walk must stop
+        // partway rather than collect them all. (The budget counts every
+        // filesystem entry the enumerator yields, directories included, so
+        // "at most 6 files" is the loosest true bound.)
+        let capped = adapter.newestRollouts(rescueEntryBudget: 6)
+        XCTAssertFalse(capped.isEmpty, "a partial result, not nothing")
+        XCTAssertLessThanOrEqual(capped.count, 6)
+        // Same tree, budget lifted: the cap — not the tree — is what limited
+        // the result above.
+        XCTAssertEqual(adapter.newestRollouts(limit: 100,
+                                              rescueEntryBudget: 10_000).count, 40)
+    }
+
+    func testUsageFromDiskExpiryHandling() throws {
+        // A rolled-over window loses to a live one regardless of which is newer.
+        let mixed = try makeRoot()
+        try writeRollout(in: mixed, stem: "rollout-2026-07-22T08-00-00",
+                         lines: [usageLine(percent: 24, resetsIn: 5 * 86_400)], age: 60)
+        try writeRollout(in: mixed, stem: "rollout-2026-07-22T09-00-00",
+                         lines: [usageLine(percent: 88, resetsIn: -3600)])
+        XCTAssertEqual(CodexAdapter(transcriptRoot: mixed).usageFromDisk()?.usedPercent, 24.0)
+
+        // Everything rolled over: hand back the newest truth anyway so the menu
+        // renders its honest "reset" state instead of "no recent reading".
+        let allExpired = try makeRoot()
+        try writeRollout(in: allExpired, lines: [usageLine(percent: 88, resetsIn: -3600)])
+        let usage = CodexAdapter(transcriptRoot: allExpired).usageFromDisk()
+        XCTAssertEqual(usage?.usedPercent, 88.0)
+        XCTAssertTrue(usage?.isExpired() ?? false)
+    }
+
+    /// Fail-soft everywhere, matching the Cursor/Antigravity disk readers:
+    /// nothing throws, nothing logs, a bad file is skipped rather than fatal.
+    func testUsageFromDiskFailsSoft() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-absent-\(UUID().uuidString)")
+        XCTAssertNil(CodexAdapter(transcriptRoot: missing).usageFromDisk())
+        XCTAssertNil(CodexAdapter(transcriptRoot: missing).usageSourceFile())
+
+        let garbage = try makeRoot()
+        try writeRollout(in: garbage, lines: ["not json at all", "{\"type\":", ""])
+        XCTAssertNil(CodexAdapter(transcriptRoot: garbage).usageFromDisk())
+
+        let empty = try makeRoot()
+        let emptyDir = empty.appendingPathComponent("2026/07/22")
+        try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        try Data().write(to: emptyDir.appendingPathComponent("rollout-empty.jsonl"))
+        XCTAssertNil(CodexAdapter(transcriptRoot: empty).usageFromDisk())
+
+        // used_percent of the wrong type is not a reading.
+        let wrongType = try makeRoot()
+        try writeRollout(in: wrongType, lines: [
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{},\"rate_limits\":{\"limit_id\":\"codex\",\"primary\":{\"used_percent\":\"24\",\"window_minutes\":10080},\"plan_type\":\"plus\"}}}",
+        ])
+        XCTAssertNil(CodexAdapter(transcriptRoot: wrongType).usageFromDisk())
+    }
+
+    /// The support diagnostic behind the one silent failure this design has:
+    /// if OpenAI ever labels the plan-wide bucket, `usageFromDisk()` honestly
+    /// returns nil, and only a bucket listing distinguishes that from a
+    /// parser regression.
+    func testRecentUsageBucketsListsBothBucketsDistinctly() throws {
+        let root = try makeRoot()
+        try writeRollout(in: root, lines: [
+            usageLine(percent: 24),
+            usageLine(percent: 24),  // repeat of the same bucket: listed once
+            usageLine(percent: 0, limitID: "codex_bengalfox",
+                      limitName: "GPT-5.3-Codex-Spark"),
+        ])
+        let buckets = CodexAdapter(transcriptRoot: root).recentUsageBuckets()
+        XCTAssertEqual(buckets.count, 2)
+        XCTAssertEqual(Set(buckets.map { $0.limitID }), ["codex", "codex_bengalfox"])
+        let planWide = try XCTUnwrap(buckets.first { $0.limitName == nil })
+        XCTAssertEqual(planWide.limitID, "codex")
+        XCTAssertEqual(planWide.usedPercent, 24.0)
+        XCTAssertEqual(planWide.windowMinutes, 10080)
+    }
+
+    /// Codex never prunes its archive, so discovery must cost the same on a
+    /// three-year-old install as on a fresh one — and must still step back
+    /// through empty day-directories to find the newest actual rollout.
+    ///
+    /// This test owns the "old history changes NOTHING" half: the same
+    /// rollouts are found on a three-year archive as on a one-year one. It
+    /// deliberately makes NO boundedness claim, because it cannot support one:
+    /// this fixture gives each month a single day-directory, and the year and
+    /// month prefixes alone hold the result to at most a handful of files
+    /// whatever `dayDirs` is set to — so any "not too many were found"
+    /// assertion here would pass by construction, including after someone
+    /// retuned the cap 4 -> 30. The cap is exercised where it can actually
+    /// fail, in `testNewestRolloutsStopsAtItsDayDirectoryCap` below.
+    func testNewestRolloutsIgnoresOldHistoryAndIsNewestFirst() throws {
+        /// One rollout per month at day 15, plus an empty newest day-directory
+        /// that discovery must step back past. Ages are absolute (derived from
+        /// year/month), so the two archives agree on ordering.
+        func buildArchive(years: [String]) throws -> URL {
+            let root = try makeRoot()
+            for year in years {
+                for month in 1...12 {
+                    let day = String(format: "%@/%02d/15", year, month)
+                    try writeRollout(in: root, day: day, stem: "rollout-\(year)-\(month)",
+                                     lines: [usageLine(percent: 5)],
+                                     age: Double(12 * (2026 - Int(year)!) + (12 - month)) * 86_400)
+                }
+            }
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("2026/12/31"), withIntermediateDirectories: true)
+            return root
+        }
+        /// "2026/12/15" — the identity that survives across two archives, whose
+        /// rollout filenames carry different random UUIDs.
+        func dayPaths(_ found: [(url: URL, mtime: Date)]) -> [String] {
+            found.map {
+                $0.url.deletingLastPathComponent().pathComponents.suffix(3).joined(separator: "/")
+            }
+        }
+
+        let deep = CodexAdapter(transcriptRoot: try buildArchive(years: ["2024", "2025", "2026"]))
+        let shallow = CodexAdapter(transcriptRoot: try buildArchive(years: ["2025", "2026"]))
+        let found = deep.newestRollouts()
+
+        XCTAssertFalse(found.isEmpty)
+        XCTAssertEqual(found.map(\.mtime), found.map(\.mtime).sorted(by: >))
+        XCTAssertEqual(dayPaths(found).first, "2026/12/15",
+                       "newest month first, stepping back past the empty day")
+        XCTAssertEqual(dayPaths(found), dayPaths(shallow.newestRollouts()),
+                       "a third year of history must change nothing about what is found")
+        XCTAssertEqual(deep.newestRollouts(limit: 1).count, 1)
+        XCTAssertEqual(deep.usageSourceFile(), found.first?.url)
+    }
+
+    /// The day-directory cap is the thing standing between a busy month and a
+    /// full walk of an archive Codex never prunes, so it gets the same
+    /// two-sided proof as the rescue budget: the SAME tree scanned twice with
+    /// different caps must return different amounts of history. Without the
+    /// second scan an "it found few files" assertion only proves the fixture
+    /// was small — which is how a 7x discovery regression (dayDirs 4 -> 30)
+    /// could have been retuned in with every test still green.
+    func testNewestRolloutsStopsAtItsDayDirectoryCap() throws {
+        let root = try makeRoot()
+        // Twelve day-directories inside ONE month, three rollouts each, ages
+        // descending with the date so "newest first" is unambiguous.
+        for day in 1...12 {
+            for index in 0..<3 {
+                try writeRollout(in: root, day: String(format: "2026/12/%02d", day),
+                                 stem: "rollout-\(day)-\(index)",
+                                 lines: [usageLine(percent: 5)],
+                                 age: Double(12 - day) * 86_400 + Double(index) * 60)
+            }
+        }
+        func dayNumbers(_ found: [(url: URL, mtime: Date)]) -> [String] {
+            Array(Set(found.map { $0.url.deletingLastPathComponent().lastPathComponent })).sorted()
+        }
+        let adapter = CodexAdapter(transcriptRoot: root)
+
+        let capped = adapter.newestRollouts(dayDirs: 3)
+        XCTAssertEqual(dayNumbers(capped), ["10", "11", "12"],
+                       "three day-directories, and the NEWEST three")
+        XCTAssertEqual(capped.count, 9, "3 days x 3 rollouts")
+        // Same tree, cap lifted: the cap — not the tree — bounded the scan
+        // above. This is the assertion that fails if the cap stops capping.
+        XCTAssertEqual(adapter.newestRollouts(limit: 100, dayDirs: 12).count, 36)
+    }
+}

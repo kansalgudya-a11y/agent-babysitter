@@ -29,6 +29,12 @@ public struct HermesAdapter: AgentAdapter {
     /// running + state.db churning + zero sessions parsed" is real format drift
     /// worth flagging. (Also the `!isActivityBased` default, stated for clarity.)
     public var sessionsAreParsed: Bool { true }
+    /// Hermes exposes real tokens and cost but no subscription quota anywhere
+    /// in its state.db — `HermesSessionReader.usageLimit` is a stored nil, and
+    /// nothing else writes one. Declaring that keeps Hermes out of the usage
+    /// list (where it could only ever read "not shared by this app") without
+    /// touching its session rows, cost, or notifications.
+    public var publishesUsageLimit: Bool { false }
 
     /// `timeZone` is threaded into the reader so day-bucket tests are
     /// deterministic; nil follows the live local zone.

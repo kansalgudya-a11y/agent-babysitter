@@ -41,6 +41,184 @@ public struct CodexAdapter: AgentAdapter {
         path.hasPrefix(transcriptRoot.path) && path.hasSuffix(".jsonl")
     }
 
+    /// Newest rollouts without walking the whole archive: the tree is
+    /// `<root>/YYYY/MM/DD/rollout-*.jsonl`, so descend newest-first and stop
+    /// once enough day-directories are collected. Cost is independent of how
+    /// many years of history exist — Codex never prunes.
+    ///
+    /// `limit` is the recall budget for `usageFromDisk()`, not a display
+    /// count: a rollout whose recent turns ran on a model-scoped allowance
+    /// contributes NO plan-wide reading (see `tailRateLimits`), so the scan
+    /// has to be able to step past several such files. 24 covers a full day
+    /// of the author's busiest observed day (40 rollouts) minus the quiet
+    /// ones, at one 64 KB tail-read each.
+    ///
+    /// `rescueEntryBudget` only reaches the unrecognized-layout fallback below.
+    /// It is a parameter purely so a test can exercise the cap without
+    /// materializing thousands of files: an untested break is an untested
+    /// break, and this one is the only thing standing between a future Codex
+    /// layout change and a full walk of an archive that is never pruned.
+    func newestRollouts(limit: Int = 24, dayDirs: Int = 4,
+                        rescueEntryBudget: Int = 2_000) -> [(url: URL, mtime: Date)] {
+        let fm = FileManager.default
+        func numericChildren(of dir: URL, nameLength: Int) -> [URL] {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]) else { return [] }
+            return entries
+                .filter { url in
+                    let name = url.lastPathComponent
+                    return name.count == nameLength && name.allSatisfy(\.isNumber)
+                        && (try? url.resourceValues(forKeys: [.isDirectoryKey]))?
+                            .isDirectory == true
+                }
+                // Zero-padded fixed-width names sort lexically == numerically.
+                .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        }
+        // The prefixes cap the step-back so a long-idle install can't
+        // degenerate into the full walk this method exists to avoid.
+        var days: [URL] = []
+        outer: for year in numericChildren(of: transcriptRoot, nameLength: 4).prefix(2) {
+            for month in numericChildren(of: year, nameLength: 2).prefix(2) {
+                for day in numericChildren(of: month, nameLength: 2) {
+                    days.append(day)
+                    if days.count >= dayDirs { break outer }
+                }
+            }
+        }
+        var files: [(url: URL, mtime: Date)] = []
+        for day in days {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: day,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]) else { continue }
+            for url in entries where url.pathExtension == "jsonl" {
+                guard let values = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                      values.isRegularFile == true,
+                      let modified = values.contentModificationDate else { continue }
+                files.append((url, modified))
+            }
+        }
+        // Layout changed under us: fall back to a BOUNDED walk so a future
+        // Codex layout degrades to "slower and approximate", never to
+        // "silently nothing" — and never to a stall. `days.isEmpty` is true on
+        // EVERY call in that state, not once, so the fallback cannot be the
+        // unbounded recursive walk it used to be: Codex never prunes, and this
+        // runs behind the store's disk-usage path.
+        if days.isEmpty { files = boundedScan(maxEntries: rescueEntryBudget) }
+        return Array(files.sorted { $0.mtime > $1.mtime }.prefix(limit))
+    }
+
+    /// Rescue scan for an unrecognized layout: at most `maxEntries` filesystem
+    /// entries are examined, so the cost is flat however deep the archive is.
+    /// Deliberately partial — an approximate "newest" beats a hang, and the
+    /// enumerator's order is not newest-first, so what survives the cap is
+    /// whatever the walk reached first.
+    private func boundedScan(maxEntries: Int) -> [(url: URL, mtime: Date)] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: transcriptRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        var files: [(url: URL, mtime: Date)] = []
+        var examined = 0
+        for case let url as URL in enumerator {
+            examined += 1
+            if examined > maxEntries { break }
+            guard url.pathExtension == "jsonl",
+                  let values = try? url.resourceValues(
+                      forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate else { continue }
+            files.append((url, modified))
+        }
+        return files
+    }
+
+    public func usageSourceFile() -> URL? { newestRollouts(limit: 1).first?.url }
+
+    /// Newest plan-wide quota across the newest rollouts, read from a tail of
+    /// each. Session-independent on purpose: the weekly window stays true for
+    /// days after the last turn, long past the store's 24h active window —
+    /// which is exactly when the menu used to fall back to "no recent reading"
+    /// for a quota with most of a week left on it.
+    /// An escalated tail read is 4 MB, and a rollout whose recent turns were
+    /// model-scoped will always trigger one (it has no plan-wide reading to
+    /// find). Two such files exist on the author's disk today; without a cap,
+    /// an archive full of them would turn one cache miss into a
+    /// multi-hundred-millisecond stall on the store's actor. Newest first, so
+    /// the budget is spent where a fresher reading could actually be.
+    static let maxEscalatedTailReads = 3
+
+    public func usageFromDisk() -> UsageLimitSnapshot? {
+        let now = Date()
+        var best: UsageLimitSnapshot?           // newest non-expired
+        var newestOverall: UsageLimitSnapshot?  // fallback when all expired
+        var escalations = 0
+        for (url, mtime) in newestRollouts() {
+            // Every reading in the tail, and never stopping at the first file
+            // that yields one: on the author's disk 2026-07-22 the newest
+            // rollout's tail held ONLY the model-scoped bucket, and the real
+            // plan-wide 24% lived in the file written 16 seconds earlier.
+            let scan = CodexRolloutParser.tailRateLimits(
+                at: url, fileModified: mtime,
+                allowEscalation: escalations < Self.maxEscalatedTailReads)
+            if scan.escalated { escalations += 1 }
+            for (limits, capturedAt) in scan.readings {
+                guard let snapshot = CodexRolloutParser.planWideUsage(limits,
+                                                                      capturedAt: capturedAt)
+                else { continue }
+                if (newestOverall?.capturedAt ?? .distantPast) < snapshot.capturedAt {
+                    newestOverall = snapshot
+                }
+                guard !snapshot.isExpired(at: now) else { continue }
+                if (best?.capturedAt ?? .distantPast) < snapshot.capturedAt {
+                    best = snapshot
+                }
+            }
+        }
+        // All windows rolled over: hand back the most recent truth so the menu
+        // renders its honest "reset" state rather than "no recent reading".
+        return best ?? newestOverall
+    }
+
+    /// One quota bucket as Codex wrote it, before the plan-wide filter.
+    public struct UsageBucket: Equatable, Sendable {
+        public let limitID: String?
+        /// nil for the plan-wide bucket; a model name ("GPT-5.3-Codex-Spark")
+        /// for the separate per-model allowances that must not mask it.
+        public let limitName: String?
+        public let usedPercent: Double?
+        public let windowMinutes: Int?
+    }
+
+    /// Diagnostic only (babysitter-debug): the distinct buckets present in the
+    /// newest rollouts. If OpenAI ever labels the plan-wide bucket too,
+    /// `usageFromDisk()` honestly returns nil and the menu says "no recent
+    /// reading" — correct, but indistinguishable from a parser regression from
+    /// the outside. This is what tells those two apart in a support report.
+    public func recentUsageBuckets() -> [UsageBucket] {
+        var seen: [UsageBucket] = []
+        for (url, mtime) in newestRollouts() {
+            // No escalation budget here: this runs once, by hand, in a support
+            // session — never on the refresh tick.
+            for (limits, _) in CodexRolloutParser.tailRateLimits(
+                at: url, fileModified: mtime).readings {
+                let bucket = UsageBucket(
+                    limitID: limits["limit_id"] as? String,
+                    limitName: limits["limit_name"] as? String,
+                    usedPercent: (limits["primary"] as? [String: Any])?["used_percent"] as? Double,
+                    windowMinutes: (limits["primary"] as? [String: Any])?["window_minutes"] as? Int)
+                if !seen.contains(where: { $0.limitID == bucket.limitID
+                                        && $0.limitName == bucket.limitName }) {
+                    seen.append(bucket)
+                }
+            }
+        }
+        return seen
+    }
+
     public func sessionID(forTranscript url: URL) -> String {
         // rollout-2026-06-28T20-07-23-<uuid>.jsonl → trailing 36-char uuid
         let stem = url.deletingPathExtension().lastPathComponent
@@ -178,6 +356,142 @@ enum CodexRolloutParser {
         return nil
     }
 
+    static let usageTailWindow = 64 * 1024
+    /// One escalation step. The longest line within the last 20 lines of any
+    /// rollout measured 2,254,629 bytes, so a 64 KB window can land entirely
+    /// inside one line and find nothing to parse.
+    static let usageTailEscalation = 4 * 1024 * 1024
+
+    /// One rollout's tail scan: what it found, and whether finding out cost
+    /// the escalated read (so the caller can budget those across files).
+    struct TailScan {
+        var readings: [(limits: [String: Any], capturedAt: Date)]
+        var escalated: Bool
+    }
+
+    /// Every `rate_limits` object in the tail of one rollout, still raw so
+    /// both the reading and the bucket diagnostic can read the same scan.
+    ///
+    /// Tail-reading is mandatory, not an optimization: the largest rollout
+    /// measured 2026-07-22 is 317,753,094 bytes and contains a single
+    /// 36,114,765-byte line — bare line-iteration of that one file takes
+    /// 165 ms, far past what a 2s tick on the store's actor can afford.
+    ///
+    /// The window escalates when the slice yields no PLAN-WIDE reading, not
+    /// merely when it yields no parseable line: a reading sitting a few
+    /// hundred KB back behind ordinary-sized lines was silently dropped by the
+    /// old "did we parse anything at all" test.
+    ///
+    /// What no window can fix, measured over the author's real archive
+    /// 2026-07-23: of the 63 rollouts holding a plan-wide reading, 61 hold
+    /// their last one within 3,273 bytes of EOF — but two hold it 258,307,779
+    /// and 300,105,435 bytes back, because those sessions switched to a
+    /// model-scoped allowance ("GPT-5.3-Codex-Spark") and EVERY rate_limits
+    /// line after the switch names it. Reaching those is a 300 MB read, so we
+    /// deliberately don't: `usageFromDisk()` scans many rollouts and takes the
+    /// newest plan-wide reading across all of them, which is what makes one
+    /// model-scoped-only file a non-event instead of a blank row.
+    static func tailRateLimits(at url: URL, fileModified: Date,
+                               allowEscalation: Bool = true) -> TailScan {
+        func lines(window: Int) -> [Data] {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+            defer { try? handle.close() }
+            var data = Data()
+            var offset: UInt64 = 0
+            do {
+                let size = try handle.seekToEnd()
+                offset = size > UInt64(window) ? size - UInt64(window) : 0
+                try handle.seek(toOffset: offset)
+                data = try handle.readToEnd() ?? Data()
+            } catch {
+                return []
+            }
+            // A non-zero offset lands mid-line: drop that leading fragment so
+            // it can't parse as garbage, and give up if the window holds no
+            // newline at all (the whole slice is one partial line).
+            if offset > 0 {
+                guard let newline = data.firstIndex(of: 0x0A) else { return [] }
+                data = data[data.index(after: newline)...]
+            }
+            return data.split(separator: 0x0A).map { Data($0) }
+        }
+        let marker = Data("rate_limits".utf8)
+        func readings(in candidates: [Data]) -> [(limits: [String: Any], capturedAt: Date)] {
+            var found: [(limits: [String: Any], capturedAt: Date)] = []
+            for line in candidates {
+                // Raw-bytes prefilter before JSONSerialization: load-bearing for
+                // cost, or a multi-megabyte non-matching line gets fully parsed.
+                // Malformed lines are skipped silently, matching the fail-soft
+                // Cursor/Antigravity disk readers.
+                guard line.range(of: marker) != nil,
+                      let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      object["type"] as? String == "event_msg",
+                      let payload = object["payload"] as? [String: Any],
+                      payload["type"] as? String == "token_count",
+                      let rateLimits = payload["rate_limits"] as? [String: Any]
+                else { continue }
+                // `capturedAt` is the event's own timestamp — the same field the
+                // live reader path uses — CLAMPED to the file's mtime. The clamp
+                // costs nothing (measured mtime − event timestamp: 0.0-0.15s across
+                // the 10 newest rollouts) and guards two real failures: an
+                // unclamped "now" would re-enable UsageForecast extrapolation on a
+                // day-old reading, and would let a stale disk snapshot outrank a
+                // genuinely fresh live one in UsageLimitLayering.
+                let stamp = (object["timestamp"] as? String).flatMap(parseTimestamp) ?? fileModified
+                found.append((rateLimits, min(stamp, fileModified)))
+            }
+            return found
+        }
+
+        let size = (try? FileManager.default
+            .attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0
+        let found = readings(in: lines(window: usageTailWindow))
+        // Escalate on "no plan-wide reading here", which SUBSUMES the old "no
+        // parseable line here" (the window landed inside one huge line): a
+        // slice full of model-scoped buckets parses perfectly and still has
+        // nothing this adapter can publish.
+        guard allowEscalation, size > usageTailWindow,
+              !found.contains(where: { planWideUsage($0.limits, capturedAt: $0.capturedAt) != nil })
+        else { return TailScan(readings: found, escalated: false) }
+        let wider = readings(in: lines(window: usageTailEscalation))
+        // Keep whichever slice actually found something to say: the wider read
+        // is a superset, but if it also finds no plan-wide reading the narrow
+        // result is no worse and the bucket diagnostic still gets its data.
+        return TailScan(readings: wider.isEmpty ? found : wider, escalated: true)
+    }
+
+    /// Codex publishes several quota buckets under `rate_limits`, keyed by
+    /// `limit_id`. The plan-wide bucket (`limit_name` absent or null) is what
+    /// "Codex" means in the menu; model-scoped buckets ("GPT-5.3-Codex-Spark")
+    /// are separate allowances that would otherwise mask it. Verified on disk
+    /// 2026-07-22: the newest line in the newest rollout is a 0% Spark reading
+    /// while the plan sits at 24%, written 16 seconds earlier — last-write-wins
+    /// on the raw stream therefore renders a confident, wrong 0%. Keying on the
+    /// ABSENCE of a model label rather than on the literal id "codex" means a
+    /// vendor id rename degrades to "the same reading" instead of to nothing.
+    static func planWideUsage(_ rateLimits: [String: Any],
+                              capturedAt: Date) -> UsageLimitSnapshot? {
+        // JSON `"limit_name":null` bridges to NSNull, so `as? String` yields
+        // nil exactly as an absent key does — both mean plan-wide.
+        if let name = rateLimits["limit_name"] as? String, !name.isEmpty { return nil }
+        guard let primary = rateLimits["primary"] as? [String: Any],
+              let usedPercent = primary["used_percent"] as? Double else { return nil }
+        // Secondary is the weekly window when present. Codex readings observed
+        // 2026-07 carry a WEEKLY primary (10080) with a null secondary, so the
+        // window length must come from the data, never be assumed to be 5h.
+        let secondary = rateLimits["secondary"] as? [String: Any]
+        return UsageLimitSnapshot(
+            usedPercent: usedPercent,
+            windowMinutes: primary["window_minutes"] as? Int ?? 300,
+            resetsAt: (primary["resets_at"] as? Double)
+                .map { Date(timeIntervalSince1970: $0) },
+            capturedAt: capturedAt,
+            plan: rateLimits["plan_type"] as? String,
+            weeklyUsedPercent: secondary?["used_percent"] as? Double,
+            weeklyResetsAt: (secondary?["resets_at"] as? Double)
+                .map { Date(timeIntervalSince1970: $0) })
+    }
+
     static func parse(_ line: Data, usageState: UsageState?) -> LineParseResult {
         guard !line.allSatisfy({ $0 == 0x20 || $0 == 0x09 || $0 == 0x0D || $0 == 0x0A })
         else { return .empty }
@@ -307,25 +621,10 @@ enum CodexRolloutParser {
                                        cacheCreationInputTokens: 0,
                                        cacheReadInputTokens: dCached)
                 }
-                // Subscription 5h/weekly window readings ride along on
-                // token_count. Primary is the 300-minute window.
+                // Subscription window readings ride along on token_count.
                 var limit: UsageLimitSnapshot?
-                if let rateLimits = payload["rate_limits"] as? [String: Any],
-                   let primary = rateLimits["primary"] as? [String: Any],
-                   let usedPercent = primary["used_percent"] as? Double {
-                    let resets = (primary["resets_at"] as? Double)
-                        .map { Date(timeIntervalSince1970: $0) }
-                    // Secondary is the weekly window when present.
-                    let secondary = rateLimits["secondary"] as? [String: Any]
-                    limit = UsageLimitSnapshot(
-                        usedPercent: usedPercent,
-                        windowMinutes: primary["window_minutes"] as? Int ?? 300,
-                        resetsAt: resets,
-                        capturedAt: timestamp ?? Date(),
-                        plan: rateLimits["plan_type"] as? String,
-                        weeklyUsedPercent: secondary?["used_percent"] as? Double,
-                        weeklyResetsAt: (secondary?["resets_at"] as? Double)
-                            .map { Date(timeIntervalSince1970: $0) })
+                if let rateLimits = payload["rate_limits"] as? [String: Any] {
+                    limit = planWideUsage(rateLimits, capturedAt: timestamp ?? Date())
                 }
                 // Usage-only: phase-neutral in the reducer (arrives after
                 // task_complete). Priced when the model (from turn_context)

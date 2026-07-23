@@ -90,13 +90,26 @@ public enum PaceAlertPlanner {
     // this planner refuse an aged reading identically — see
     // UsageForecast.maximumStaleness.
 
-    /// One warning per agent per window (5h and weekly independently),
-    /// deduped by reset time exactly like UsageAlertPlanner. The floors are
-    /// the user's "show pace from N%" preferences.
+    /// One warning per agent per window (primary and secondary-weekly
+    /// independently), deduped by reset time exactly like UsageAlertPlanner.
+    /// The floors are the user's "show pace from N%" preferences, split by
+    /// window LENGTH — `minimumShortWindowPercent` for a window the row calls
+    /// "5h" or "daily", `minimumLongWindowPercent` for one it calls "weekly"
+    /// or "billing cycle".
+    ///
+    /// The primary window is routed by its own length, NOT assumed short. It
+    /// used to take the short floor unconditionally while `MenuContent`
+    /// already routed by length, so on any agent whose primary window is long
+    /// (Codex's primary IS the weekly window) the two disagreed: with "Long
+    /// window pace from" at 90% and "Short" at 0%, Codex at 45% and burning
+    /// showed NO pace line in the menu and still fired a banner saying it was
+    /// on pace to hit its weekly limit — inverting the menu's own stated
+    /// invariant that it must not stay silent about a state the banner treats
+    /// as worth interrupting for, and contradicting the Preferences help.
     public static func plan(limits: [String: UsageLimitSnapshot],
                             threshold: Double,
-                            minimumFiveHourPercent: Double = minimumUsedPercent,
-                            minimumWeeklyPercent: Double = minimumUsedPercent,
+                            minimumShortWindowPercent: Double = minimumUsedPercent,
+                            minimumLongWindowPercent: Double = minimumUsedPercent,
                             alertedFiveHour: [String: Date],
                             alertedWeekly: [String: Date],
                             now: Date = Date()) -> Outcome {
@@ -105,19 +118,22 @@ public enum PaceAlertPlanner {
         var weekly = alertedWeekly
 
         for (agentID, limit) in limits.sorted(by: { $0.key < $1.key }) {
+            let primaryMinimum = UsageWindowName.forWindow(minutes: limit.windowMinutes).isLong
+                ? minimumLongWindowPercent : minimumShortWindowPercent
             if let alert = evaluate(agentID: agentID, snapshot: limit,
                                     isWeekly: false, threshold: threshold,
-                                    minimumUsed: minimumFiveHourPercent, now: now),
+                                    minimumUsed: primaryMinimum, now: now),
                fiveHour[agentID] != alert.resetsAt {
                 fiveHour[agentID] = alert.resetsAt
                 alerts.append(alert)
             }
             // The weekly fields ride on the same snapshot; the pace math is
-            // window-agnostic, so lift them into a window of their own.
+            // window-agnostic, so lift them into a window of their own. Always
+            // the long floor — `weeklyWindow` is 7 days by construction.
             if let weeklyView = limit.weeklyWindow,
                let alert = evaluate(agentID: agentID, snapshot: weeklyView,
                                     isWeekly: true, threshold: threshold,
-                                    minimumUsed: minimumWeeklyPercent, now: now),
+                                    minimumUsed: minimumLongWindowPercent, now: now),
                weekly[agentID] != alert.resetsAt {
                 weekly[agentID] = alert.resetsAt
                 alerts.append(alert)

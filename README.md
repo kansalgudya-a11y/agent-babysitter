@@ -82,13 +82,17 @@ disabling removes only our entries.
   bar icon can show status + count, today's cost, or the hottest limit %.
 - **This-week stats** — how long your agents worked while you did other
   things, sessions watched, and cost per agent. All computed locally.
-- **5-hour limits, per agent** — with reset countdowns and the weekly window
-  under each bar. The
-  section shows open apps by default; "Show all" expands to every installed
-  agent (closed ones dimmed, with their last known reading). If you only have
-  one agent installed, you just see that one.
+- **Usage limits, per agent** — every window with its own reset countdown,
+  and the longer ones named as what they are (Codex's weekly, Cursor's
+  billing cycle, Manus's daily), plus the weekly window under each bar. The
+  section shows open apps by default, plus any agent whose window it can still
+  speak about (dimmed) — a current reading, or one whose window has just
+  rolled over, which the row says plainly instead of vanishing at reset;
+  "Show all" expands to every installed agent that reports
+  one. If you only have one agent installed, you just see that one.
   Codex shows a real % from disk (CLI + desktop,
-  zero network). Antigravity shows the real five-hour
+  zero network) — its weekly window, how much is left, and when it resets,
+  whether or not Codex is open. Antigravity shows the real five-hour
   quota % (and plan tier) that its own Model Quota page displays, read from
   the IDE's synced account state — zero network. Claude Code
   never writes its 5h % to disk, but it computes the number locally for its

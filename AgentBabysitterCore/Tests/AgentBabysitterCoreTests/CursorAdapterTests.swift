@@ -252,6 +252,23 @@ final class CursorUsageTests: XCTestCase {
         XCTAssertEqual(adapter.storedAccessToken(), "tok")
     }
 
+    /// Through the STORE, not the adapter in isolation: the disk fallback's
+    /// wiring had no coverage at all before the uniform loop replaced the
+    /// bespoke per-agent helpers, and Cursor is one of the two legs it must
+    /// not have broken.
+    func testCursorPlanArrivesThroughUsageLimits() async throws {
+        let appSupport = try makeAppSupport()
+        let adapter = CursorAdapter(appSupport: appSupport)
+        writeItemTable(at: adapter.stateDBURL, rows: [
+            ("cursorAuth/stripeMembershipType", "pro"),
+        ])
+        let store = SessionStore(configuration: .init(
+            projectsRoot: appSupport, adapters: [adapter]))
+        let limits = await store.usageLimits()
+        XCTAssertEqual(limits["cursor"]?.plan, "Pro")
+        XCTAssertNil(limits["cursor"]?.usedPercent, "no percentage exists locally")
+    }
+
     func testNoPlanKeyMeansNoSnapshot() throws {
         let appSupport = try makeAppSupport()
         let adapter = CursorAdapter(appSupport: appSupport)

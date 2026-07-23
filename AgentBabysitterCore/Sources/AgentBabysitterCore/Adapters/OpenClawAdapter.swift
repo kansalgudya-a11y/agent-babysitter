@@ -44,6 +44,12 @@ public struct OpenClawAdapter: AgentAdapter {
     // The gateway store is opaque to parsing (see parseLine); the SDK store is
     // real Claude Code JSONL and IS parsed.
     public var isActivityBased: Bool { surface == .gateway }
+    /// Neither surface records a quota: the gateway store is opaque to parsing
+    /// (its reader's `usageLimit` is a stored nil), and the SDK surface's
+    /// Claude-format lines carry no `rate_limits` — `TranscriptLineParser`
+    /// never produces one. Unconditional, so both surfaces stay out of the
+    /// usage list while keeping their real tokens and cost.
+    public var publishesUsageLimit: Bool { false }
 
     /// Resolves the native store root and the SDK root from the environment.
     public init(surface: Surface,
