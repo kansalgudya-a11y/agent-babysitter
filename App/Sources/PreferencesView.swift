@@ -527,9 +527,13 @@ struct PreferencesView: View {
                     // and .denied / quiet-hours / mute are exactly what the old
                     // dump omitted. No file contents or keys are included.
                     Task { @MainActor in
-                        let settings = await UNUserNotificationCenter.current().notificationSettings()
+                        // Sendable enum only — see NotificationManager
+                        // .currentAuthorizationStatus (Xcode 16 SDK treats
+                        // UNNotificationSettings as non-Sendable).
+                        let status = await NotificationManager.currentAuthorizationStatus(
+                            UNUserNotificationCenter.current())
                         let auth: String
-                        switch settings.authorizationStatus {
+                        switch status {
                         case .authorized: auth = "authorized"
                         case .denied: auth = "denied — macOS silently drops every banner"
                         case .notDetermined: auth = "not yet requested"

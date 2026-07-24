@@ -45,11 +45,25 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// launch, on app-foreground, and when the Notifications settings tab
     /// appears.
     func refreshAuthorizationStatus() async {
-        let settings = await center.notificationSettings()
-        let new = settings.authorizationStatus
+        let new = await Self.currentAuthorizationStatus(center)
         guard new != authorizationStatus else { return }
         authorizationStatus = new
         onAuthorizationChange?(new)
+    }
+
+    /// `UNNotificationSettings` is not Sendable in the Xcode 16 SDK, so awaiting
+    /// `notificationSettings()` and reading a property across isolation fails to
+    /// compile there (newer SDKs allow it — CI builds on 16.4). Pull the one
+    /// value we need out inside the callback: `UNAuthorizationStatus` is a
+    /// Sendable enum, so nothing non-Sendable ever crosses.
+    static func currentAuthorizationStatus(
+        _ center: UNUserNotificationCenter
+    ) async -> UNAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            center.getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
+        }
     }
 
     /// Rows that left the list take their delivered banners along.
