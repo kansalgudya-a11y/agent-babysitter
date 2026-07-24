@@ -338,6 +338,17 @@ public actor SessionStore {
             let cwd = tracked.reader.lastKnownCWD
             var combinedCost = tracked.reader.cost
             if let subCost = sidechainCostByParent[key] { combinedCost.merge(subCost) }
+            // tty comes from the same ps scan that matched the pid, so Jump can
+            // select the exact tab. Resolved into a local FIRST: doing this
+            // inline as `tracked.pid.flatMap { … }` sends `tracked` into a
+            // closure, which stricter concurrency checking rejects ("sending
+            // 'tracked' risks causing data races") even though the local
+            // toolchain accepted it.
+            var tty: String?
+            if let pid = tracked.pid {
+                tty = latestProcessesByAdapter[tracked.adapter.id]?
+                    .first { $0.pid == pid }?.tty
+            }
             rows.append(SessionRow(
                 id: tracked.reader.sessionID,
                 projectName: cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
@@ -357,13 +368,7 @@ public actor SessionStore {
                 hookDetail: tracked.latestHookSignal,
                 title: tracked.reader.lastPromptTitle,
                 apiError: tracked.reader.lastAPIError,
-                // tty comes from the same ps scan that matched the pid, so Jump
-                // can select the exact tab. Looked up per row (the process list
-                // is a handful of entries) rather than threaded through match().
-                tty: tracked.pid.flatMap { pid in
-                    latestProcessesByAdapter[tracked.adapter.id]?
-                        .first { $0.pid == pid }?.tty
-                }))
+                tty: tty))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]
