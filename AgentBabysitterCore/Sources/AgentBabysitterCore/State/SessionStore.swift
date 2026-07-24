@@ -32,6 +32,17 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
     /// currently failing. Nil when the last output was healthy: an annotation
     /// carried alongside the state, not a new lifecycle state.
     public var apiError: String?
+    /// What the agent changed in `cwd`, sampled at turn boundaries off the tick
+    /// (see GitSnapshot). Nil until the first sample, or when cwd isn't a repo.
+    public var git: GitSnapshot?
+    /// Redacted one-line summaries of the agent's most recent tool calls,
+    /// oldest→newest. Empty without Precision-mode hooks. Display only —
+    /// never sent anywhere (see ToolCallRedactor).
+    public var recentToolCalls: [ToolCallSummary]
+    /// Controlling terminal of `pid` ("ttys004"), so Jump can select the exact
+    /// tab instead of just fronting the app. Nil for desktop-app sessions and
+    /// any process with no tty.
+    public var tty: String?
 
     /// Session hosted by a desktop app rather than a terminal.
     public var isDesktopApp: Bool {
@@ -51,7 +62,13 @@ public struct SessionRow: Equatable, Sendable, Identifiable {
                 agentID: String = "claude-code", agentName: String = "Claude Code",
                 transcriptURL: URL? = nil, isActivityBased: Bool = false,
                 hookDetail: HookSignal? = nil, title: String? = nil,
-                apiError: String? = nil) {
+                apiError: String? = nil,
+                git: GitSnapshot? = nil,
+                recentToolCalls: [ToolCallSummary] = [],
+                tty: String? = nil) {
+        self.git = git
+        self.recentToolCalls = recentToolCalls
+        self.tty = tty
         self.id = id
         self.projectName = projectName
         self.state = state
@@ -339,7 +356,14 @@ public actor SessionStore {
                 isActivityBased: tracked.adapter.isActivityBased,
                 hookDetail: tracked.latestHookSignal,
                 title: tracked.reader.lastPromptTitle,
-                apiError: tracked.reader.lastAPIError))
+                apiError: tracked.reader.lastAPIError,
+                // tty comes from the same ps scan that matched the pid, so Jump
+                // can select the exact tab. Looked up per row (the process list
+                // is a handful of entries) rather than threaded through match().
+                tty: tracked.pid.flatMap { pid in
+                    latestProcessesByAdapter[tracked.adapter.id]?
+                        .first { $0.pid == pid }?.tty
+                }))
         }
         let priority: [SessionState: Int] = [.waitingForInput: 0, .stalled: 1, .working: 2,
                                              .done: 3, .ended: 4]

@@ -619,7 +619,7 @@ enum UISnapshots {
                                        cacheReadTokens: 40_000_000,
                                        cacheWriteTokens: 4_000_000),
                 costHistory: history, statsDays: Array(statsDays))
-            results.append((name, AnyView(StatsView(model: model, initialRange: range))))
+            results.append((name, AnyView(StatsView(model: model, initialRange: range).content)))
         }
         stats("stats-today", .today)
         stats("stats-week", .week)
@@ -638,9 +638,9 @@ enum UISnapshots {
                                 byAgent: ["claude-code": 152.1, "codex": 26.3],
                                 activeMinutes: 214, sessions: 9)])
         results.append(("stats-single-day",
-                        AnyView(StatsView(model: singleDayModel, initialRange: .week))))
+                        AnyView(StatsView(model: singleDayModel, initialRange: .week).content)))
         results.append(("stats-single-day-alltime",
-                        AnyView(StatsView(model: singleDayModel, initialRange: .allTime))))
+                        AnyView(StatsView(model: singleDayModel, initialRange: .allTime).content)))
 
         // Welcome tour as an updater would see it (floor 0.2.1 -> newer badged).
         setFixturePref("0.2.1", forKey: "lastSeenGuideVersion")

@@ -24,7 +24,10 @@ public struct GitSnapshot: Equatable, Sendable, Codable {
         self.uncommitted = uncommitted
     }
 
-    /// e.g. "+184 −12 across 6 files · 2 uncommitted". Zero clauses are omitted
+    /// e.g. "+184 −12 · 6 files · 2 uncommitted". Kept compact on purpose: the
+    /// menu row is a fixed ~34-character column, and the wordier "across 6
+    /// files" phrasing truncated the clause the user most wants ("2 uncom…")
+    /// in the rendered snapshot. Zero clauses are omitted
     /// (an all-deletions diff drops the "+0"; no untracked drops the uncommitted
     /// clause). Returns "" when the tree is completely clean, so the caller can
     /// choose to show nothing rather than a "0 changes" line.
@@ -36,8 +39,8 @@ public struct GitSnapshot: Equatable, Sendable, Codable {
             // U+2212 MINUS SIGN — matches the app's other numeric captions.
             if removed > 0 { deltas.append("−\(removed)") }
             let fileWord = filesChanged == 1 ? "file" : "files"
-            let prefix = deltas.isEmpty ? "" : deltas.joined(separator: " ") + " "
-            clauses.append("\(prefix)across \(filesChanged) \(fileWord)")
+            if !deltas.isEmpty { clauses.append(deltas.joined(separator: " ")) }
+            clauses.append("\(filesChanged) \(fileWord)")
         }
         if uncommitted > 0 {
             clauses.append("\(uncommitted) uncommitted")

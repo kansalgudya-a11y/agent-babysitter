@@ -8,14 +8,16 @@ final class NotificationPlannerTests: XCTestCase {
                    lastGrowthAt: nil, isUnreadable: false, pid: 1, cwd: nil)
     }
 
-    func testNoNotificationsOnFirstObservation() {
+    func testFirstObservationFiresOnlyForAlreadyWaiting() {
         var planner = NotificationPlanner()
-        // Launch scan finds sessions already waiting/stalled/done: stay quiet,
-        // the user just opened the app and can see the list.
+        // Launch scan: already-done/already-stalled stay quiet (the user just
+        // opened the app and can see them). An already-WAITING session does
+        // fire — you open the app precisely when you suspect an agent is
+        // blocked, and that was the one case that used to stay silent forever.
         let events = planner.events(for: [row("a", .waitingForInput),
                                           row("b", .stalled),
                                           row("c", .done)])
-        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(events, [NotificationEvent(sessionID: "a", kind: .waitingForInput)])
     }
 
     func testWaitingFiresOncePerEpisode() {
@@ -52,17 +54,26 @@ final class NotificationPlannerTests: XCTestCase {
         XCTAssertEqual(events, [NotificationEvent(sessionID: "a", kind: .turnCompleted)])
     }
 
-    func testStallFiresOnceAndResetsOnResume() {
+    func testStallFiresOnceThenIsRateLimitedAcrossFlapping() {
         var planner = NotificationPlanner()
-        _ = planner.events(for: [row("a", .working)])
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        _ = planner.events(for: [row("a", .working)], now: t0)
 
-        XCTAssertEqual(planner.events(for: [row("a", .stalled)]),
+        XCTAssertEqual(planner.events(for: [row("a", .stalled)], now: t0),
                        [NotificationEvent(sessionID: "a", kind: .stalled)])
-        XCTAssertTrue(planner.events(for: [row("a", .stalled)]).isEmpty)
+        XCTAssertTrue(planner.events(for: [row("a", .stalled)], now: t0).isEmpty)
 
-        // Resumes, then stalls again -> fires again
-        _ = planner.events(for: [row("a", .working)])
-        XCTAssertEqual(planner.events(for: [row("a", .stalled)]),
+        // Resume + re-stall INSIDE the cooldown: silent. A session flapping
+        // stalled<->working through a chain of slow tool calls used to ding on
+        // every cycle.
+        _ = planner.events(for: [row("a", .working)], now: t0.addingTimeInterval(10))
+        XCTAssertTrue(planner.events(for: [row("a", .stalled)],
+                                     now: t0.addingTimeInterval(20)).isEmpty)
+
+        // Past the cooldown it is a genuinely new stall, so it fires again.
+        _ = planner.events(for: [row("a", .working)], now: t0.addingTimeInterval(700))
+        XCTAssertEqual(planner.events(for: [row("a", .stalled)],
+                                      now: t0.addingTimeInterval(701)),
                        [NotificationEvent(sessionID: "a", kind: .stalled)])
     }
 
@@ -70,8 +81,10 @@ final class NotificationPlannerTests: XCTestCase {
         var planner = NotificationPlanner()
         _ = planner.events(for: [row("a", .working)])
         _ = planner.events(for: [row("a", .ended)])
-        // Session comes back (same id re-observed): treat like first sight
-        XCTAssertTrue(planner.events(for: [row("a", .waitingForInput)]).isEmpty)
+        // Session comes back (same id re-observed): treated like first sight,
+        // so a session that returns BLOCKED alerts rather than sitting silent.
+        XCTAssertEqual(planner.events(for: [row("a", .waitingForInput)]),
+                       [NotificationEvent(sessionID: "a", kind: .waitingForInput)])
     }
 
     func testMultipleSessionsAreIndependent() {

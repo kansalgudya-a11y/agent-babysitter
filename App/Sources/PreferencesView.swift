@@ -316,6 +316,15 @@ struct PreferencesView: View {
                             ForEach(0..<24) { Text(Self.hourLabel($0)).tag($0) }
                         }
                     }
+                    // Both pickers are free 0–23, so From == To is one stray
+                    // click away — and it means quiet ALL DAY. Say so, or a
+                    // mis-set picker silently swallows every alert forever,
+                    // which is the worst failure mode this app has.
+                    if model.quietStartHour == model.quietEndHour {
+                        Text("⚠️ Same From and To means quiet all day — no banners at all. Set different hours to be pinged again.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
 

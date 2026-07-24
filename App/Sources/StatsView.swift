@@ -62,8 +62,23 @@ struct StatsView: View {
         // stops the content-sized window from opening taller than the screen.
         // (Making the window itself resizable is a scene-level change in
         // AgentBabysitterApp.swift — `.windowResizability(.contentMinSize)`.)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        ScrollView { content }
+            .frame(maxHeight: maxContentHeight)
+            .alert("Couldn't save the CSV",
+                   isPresented: Binding(get: { exportError != nil },
+                                        set: { if !$0 { exportError = nil } })) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(exportError ?? "")
+            }
+    }
+
+    /// The scrollable body, split out so the snapshot harness can render it
+    /// directly: `ImageRenderer` gives a `ScrollView` no intrinsic height and
+    /// writes a blank image, which silently cost every stats fixture its visual
+    /// QA. The window still shows `body` (scrolling + height cap intact).
+    var content: some View {
+        VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text(title)
                         .font(.title2).fontWeight(.semibold)
@@ -117,17 +132,8 @@ struct StatsView: View {
                         .help("Saves every recorded day: date, cost, active minutes, sessions, and per-agent, per-project and per-model amounts in your display currency.")
                 }
             }
-            .padding(20)
-            .frame(width: 460, alignment: .topLeading)
-        }
-        .frame(maxHeight: maxContentHeight)
-        .alert("Couldn't save the CSV",
-               isPresented: Binding(get: { exportError != nil },
-                                    set: { if !$0 { exportError = nil } })) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(exportError ?? "")
-        }
+        .padding(20)
+        .frame(width: 460, alignment: .topLeading)
     }
 
     /// Everything scoped by the range picker: the headline trio, the pace note,

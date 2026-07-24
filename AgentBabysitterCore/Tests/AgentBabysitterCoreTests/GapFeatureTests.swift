@@ -20,8 +20,13 @@ final class QuietHoursTests: XCTestCase {
         XCTAssertTrue(QuietHours.isQuiet(now: at(22), startHour: 22, endHour: 8)) // start inclusive
     }
 
-    func testEqualHoursMeansNever() {
-        XCTAssertFalse(QuietHours.isQuiet(now: at(5), startHour: 0, endHour: 0))
+    func testEqualHoursMeansAllDay() {
+        // From == To is read literally: silenced around the clock. It used to
+        // mean "never quiet", which inverted the toggle — the switch read ON
+        // while every banner still fired. Preferences warns when the two match,
+        // so this can't silently swallow every alert.
+        XCTAssertTrue(QuietHours.isQuiet(now: at(5), startHour: 0, endHour: 0))
+        XCTAssertTrue(QuietHours.isQuiet(now: at(17), startHour: 9, endHour: 9))
     }
 }
 
