@@ -1229,20 +1229,23 @@ final class AppModel: ObservableObject {
             gitInFlight.insert(key)
             gitAttemptedGrowth[key] = epoch
             let growth = row.lastGrowthAt
-            Task.detached { [weak self] in
+            // MainActor-isolated task, NOT Task.detached + MainActor.run: the
+            // latter sends `self` across isolation domains, which Xcode 16.x
+            // rejects ("sending 'self' risks causing data races") even though
+            // newer toolchains accept it — CI builds on 16.4. `read` is
+            // nonisolated async, so the git subprocess still runs off-main.
+            Task { @MainActor [weak self] in
                 let snap = await GitSnapshotReader.read(cwd: cwd)
-                await MainActor.run {
-                    guard let self else { return }
-                    self.gitInFlight.remove(key)
-                    if let snap {
-                        self.gitByKey[key] = (snap, growth)
-                    } else {
-                        // Non-git cwd or failure: keep no snapshot, but the epoch
-                        // stays recorded above so we don't hammer `git` each tick.
-                        self.gitByKey.removeValue(forKey: key)
-                    }
-                    Task { await self.refresh() }
+                guard let self else { return }
+                self.gitInFlight.remove(key)
+                if let snap {
+                    self.gitByKey[key] = (snap, growth)
+                } else {
+                    // Non-git cwd or failure: keep no snapshot, but the epoch
+                    // stays recorded above so we don't hammer `git` each tick.
+                    self.gitByKey.removeValue(forKey: key)
                 }
+                Task { await self.refresh() }
             }
         }
     }
@@ -1449,9 +1452,15 @@ final class AppModel: ObservableObject {
         guard defaults.integer(forKey: "statsRecomputeVersion") < 6 else { return }
         defaults.set(6, forKey: "statsRecomputeVersion")   // once per version, even if it throws
         let adapters = self.adapters
-        Task.detached(priority: .utility) { [weak self] in
-            let totals = StatsRecompute.run(adapters: adapters)
-            await MainActor.run { self?.applyRecomputedStats(totals) }
+        // Same reason as the git snapshot above: never send `self` into a
+        // detached task. The inner detached task captures only `adapters`
+        // (Sendable) and returns Sendable `Totals`, so the heavy transcript
+        // rebuild still runs off-main while `self` stays MainActor-bound.
+        Task { @MainActor [weak self] in
+            let totals = await Task.detached(priority: .utility) {
+                StatsRecompute.run(adapters: adapters)
+            }.value
+            self?.applyRecomputedStats(totals)
         }
     }
 
