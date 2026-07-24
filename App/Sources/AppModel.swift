@@ -1446,8 +1446,8 @@ final class AppModel: ObservableObject {
         // recovers Codex sub-agent usage whose model was declared after its
         // token_count events (previously priced $0). Persisted totals are frozen,
         // so force one rebuild from the transcripts.
-        guard defaults.integer(forKey: "statsRecomputeVersion") < 5 else { return }
-        defaults.set(5, forKey: "statsRecomputeVersion")   // once per version, even if it throws
+        guard defaults.integer(forKey: "statsRecomputeVersion") < 6 else { return }
+        defaults.set(6, forKey: "statsRecomputeVersion")   // once per version, even if it throws
         let adapters = self.adapters
         Task.detached(priority: .utility) { [weak self] in
             let totals = StatsRecompute.run(adapters: adapters)

@@ -90,6 +90,18 @@ enum FeatureGuide {
             Tip(version: "0.11.3", symbol: "calendar.badge.clock",
                 title: "Your Codex weekly, even when Codex is closed",
                 detail: "The 7-day quota is read straight off disk, so a shut Codex still shows how much is left and when it rolls over — dimmed, with how old the reading is."),
+            Tip(version: "0.12.0", symbol: "arrow.trianglehead.branch",
+                title: "See what the agent actually changed",
+                detail: "A finished session now shows its diff — \"+184 −12 · 6 files · 2 uncommitted\" — read straight from git, so you can tell useful work from a wasted turn without opening the repo."),
+            Tip(version: "0.12.0", symbol: "terminal",
+                title: "What it's running, not just \"Bash\"",
+                detail: "Rows show the actual command the agent is running, with anything secret-shaped stripped out first. The drill-in keeps the last few."),
+            Tip(version: "0.12.0", symbol: "bell.badge",
+                title: "Alerts that can't go quietly missing",
+                detail: "The app now checks macOS actually lets it notify, stops burning an alert it couldn't deliver, and pings you about a session that was already stuck when you opened it — the one case it used to stay silent on."),
+            Tip(version: "0.12.0", symbol: "checkmark.seal",
+                title: "Honest numbers",
+                detail: "The old \"caught $X before it ran away\" line is gone — it counted money the app never saved. Budgets now compare in your own currency, and agents that can't report cost say \"activity only\" instead of implying zero."),
             // Title and detail describe the same rule, and both match the
             // menu's own control ("Show fewer" / "Show all") — the list stopped
             // being open-apps-only when a closed agent's account quota earned
